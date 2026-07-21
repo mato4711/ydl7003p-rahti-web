@@ -83,11 +83,11 @@ function renderValidation(validation) {
   }
   if (validation.compliant) {
     box.className = "layout-notice ok";
-    box.innerHTML = "<strong>Expected result-screen layout confirmed.</strong>The Force/extension graph, Elongation field and MaxForce field were detected.";
+    box.innerHTML = "<strong>Expected layout confirmed:</strong> Force/extension graph, Elongation and MaxForce detected.";
   } else {
     const issues = (validation.issues || []).map(x => `<li>${escapeHtml(x)}</li>`).join("");
     box.className = "layout-notice warning";
-    box.innerHTML = `<strong>The uploaded image does not fully match the expected completed-test layout.</strong><ul>${issues}</ul>`;
+    box.innerHTML = `<strong>Layout warning:</strong><ul>${issues}</ul>`;
   }
 }
 
@@ -560,7 +560,6 @@ $("trainBtn").onclick = async () => {
   }
 };
 
-$("fitBtn").onclick = redrawAll;
 window.addEventListener("resize", () => setTimeout(redrawAll, 100));
 
 document.querySelectorAll(".tab").forEach(button => {
@@ -618,3 +617,174 @@ $("settingsFile").addEventListener("change", async event => {
     status("Could not load settings: " + error.message, "error");
   }
 });
+
+
+/* ------------------ User-customizable information panel layout ------------------ */
+
+const PANEL_LAYOUT_KEY = "ydl7003p.panelLayout.v1";
+let panelLayoutEditing = false;
+let draggedPanel = null;
+let dragArmedPanel = null;
+let savePanelLayoutTimer = null;
+
+function dashboardCards() {
+  return [...document.querySelectorAll(".dashboard-card")];
+}
+
+function dashboardColumns() {
+  return [...document.querySelectorAll(".panel-column")];
+}
+
+function savePanelLayout() {
+  const layout = {
+    columns: dashboardColumns().map(column => ({
+      id: column.id,
+      panels: [...column.querySelectorAll(".dashboard-card")].map(card => card.id)
+    })),
+    heights: Object.fromEntries(
+      dashboardCards().map(card => [card.id, card.style.height || ""])
+    )
+  };
+  localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(layout));
+}
+
+function schedulePanelLayoutSave() {
+  clearTimeout(savePanelLayoutTimer);
+  savePanelLayoutTimer = setTimeout(savePanelLayout, 180);
+}
+
+function restorePanelLayout() {
+  let layout = null;
+  try {
+    layout = JSON.parse(localStorage.getItem(PANEL_LAYOUT_KEY) || "null");
+  } catch (_) {
+    layout = null;
+  }
+  if (!layout) return;
+
+  (layout.columns || []).forEach(savedColumn => {
+    const column = $(savedColumn.id);
+    if (!column) return;
+    (savedColumn.panels || []).forEach(panelId => {
+      const panel = $(panelId);
+      if (panel) column.appendChild(panel);
+    });
+  });
+
+  Object.entries(layout.heights || {}).forEach(([panelId, height]) => {
+    const panel = $(panelId);
+    if (panel && height) panel.style.height = height;
+  });
+}
+
+function setPanelLayoutEditing(enabled) {
+  panelLayoutEditing = enabled;
+  document.body.classList.toggle("layout-editing", enabled);
+  $("customizeLayoutBtn").textContent = enabled ? "Finish panel layout" : "Customize panels";
+  $("resetLayoutBtn").classList.toggle("hidden", !enabled);
+
+  dashboardCards().forEach(card => {
+    card.draggable = false;
+  });
+
+  if (enabled) {
+    status("Panel layout mode: drag panels by ⋮⋮ and resize them from the lower edge. Changes are saved in this browser.", "warning");
+  } else {
+    savePanelLayout();
+    status("Panel layout saved in this browser.", "ready");
+    setTimeout(redrawAll, 80);
+  }
+}
+
+function resetPanelLayout() {
+  localStorage.removeItem(PANEL_LAYOUT_KEY);
+  const controls = $("controlColumn");
+  const results = $("resultColumn");
+  ["axisCard", "sampleCard", "instrumentCard"].forEach(id => controls.appendChild($(id)));
+  results.appendChild($("resultCard"));
+  dashboardCards().forEach(card => {
+    card.style.height = "";
+  });
+  savePanelLayout();
+  status("Default panel layout restored.", "ready");
+  setTimeout(redrawAll, 80);
+}
+
+dashboardCards().forEach(card => {
+  const handle = card.querySelector(".drag-handle");
+  if (handle) {
+    handle.addEventListener("pointerdown", () => {
+      if (!panelLayoutEditing) return;
+      dragArmedPanel = card;
+      card.draggable = true;
+    });
+    handle.addEventListener("pointerup", () => {
+      if (!draggedPanel) {
+        card.draggable = false;
+        dragArmedPanel = null;
+      }
+    });
+  }
+
+  card.addEventListener("dragstart", event => {
+    if (!panelLayoutEditing || dragArmedPanel !== card) {
+      event.preventDefault();
+      return;
+    }
+    draggedPanel = card;
+    card.classList.add("dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", card.id);
+  });
+
+  card.addEventListener("dragend", () => {
+    card.classList.remove("dragging");
+    card.draggable = false;
+    draggedPanel = null;
+    dragArmedPanel = null;
+    dashboardColumns().forEach(column => column.classList.remove("drag-over"));
+    savePanelLayout();
+    setTimeout(redrawAll, 80);
+  });
+});
+
+dashboardColumns().forEach(column => {
+  column.addEventListener("dragover", event => {
+    if (!panelLayoutEditing || !draggedPanel) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    column.classList.add("drag-over");
+
+    const candidates = [...column.querySelectorAll(".dashboard-card:not(.dragging)")];
+    const before = candidates.find(card => {
+      const rect = card.getBoundingClientRect();
+      return event.clientY < rect.top + rect.height / 2;
+    });
+    column.insertBefore(draggedPanel, before || null);
+  });
+
+  column.addEventListener("dragleave", event => {
+    if (!column.contains(event.relatedTarget)) column.classList.remove("drag-over");
+  });
+
+  column.addEventListener("drop", event => {
+    event.preventDefault();
+    column.classList.remove("drag-over");
+    savePanelLayout();
+  });
+});
+
+if ("ResizeObserver" in window) {
+  const panelResizeObserver = new ResizeObserver(() => {
+    if (panelLayoutEditing) schedulePanelLayoutSave();
+  });
+  dashboardCards().forEach(card => panelResizeObserver.observe(card));
+}
+
+$("customizeLayoutBtn").addEventListener("click", () => {
+  setPanelLayoutEditing(!panelLayoutEditing);
+});
+
+$("resetLayoutBtn").addEventListener("click", resetPanelLayout);
+
+restorePanelLayout();

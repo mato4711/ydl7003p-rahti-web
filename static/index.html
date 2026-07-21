@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>YDL-7003-P data analyzer</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
 <header>
@@ -18,11 +18,19 @@
       <input id="imageFile" type="file" accept="image/*">
     </label>
     <button id="analyzeBtn" class="primary" disabled>Re-analyse chosen image</button>
-    <button id="fitBtn">Fit views</button>
-    <span id="status" class="status ready" role="status" aria-live="polite">Ready — choose an image to begin.</span>
-  </section>
 
-  <section id="layoutNotice" class="layout-notice hidden" role="alert"></section>
+    <section id="layoutNotice" class="layout-notice hidden" role="alert"></section>
+
+    <span id="status" class="status ready" role="status" aria-live="polite">Ready — choose an image to begin.</span>
+
+    <button id="customizeLayoutBtn" class="layout-button" type="button"
+            title="Rearrange and resize the information panels">
+      Customize panels
+    </button>
+    <button id="resetLayoutBtn" class="layout-button hidden" type="button">
+      Reset panels
+    </button>
+  </section>
 
   <section class="workspace">
     <div class="views card">
@@ -59,62 +67,69 @@
       </div>
     </div>
 
-    <aside class="settings">
-      <section id="axisCard" class="card">
-        <h2>Axis calibration</h2>
-        <p id="axisHint" class="axis-hint hidden"></p>
-        <div class="grid4">
-          <label>X min<input id="xmin" type="number" step="any" value="0"></label>
-          <label>X max<input id="xmax" type="number" step="any" value="5"></label>
-          <label>Y min<input id="ymin" type="number" step="any" value="0"></label>
-          <label>Y max<input id="ymax" type="number" step="any" value="120"></label>
-        </div>
-        <button id="reextractBtn">Confirm axes and re-extract curve</button>
-      </section>
+    <aside id="settingsDashboard" class="settings-dashboard">
+      <div id="controlColumn" class="panel-column" data-layout-column="controls">
 
-      <section class="card">
-        <h2>Sample and modulus settings</h2>
-        <div class="grid2">
-          <label>Gauge length (mm)<input id="gauge" type="number" step="any" value="50"></label>
-          <label>Sample width (mm)<input id="width" type="number" step="any" value="15"></label>
-          <label>Thickness (µm)<input id="thickness" type="number" step="any" value="120"></label>
-          <label>Grammage (g/m²)<input id="grammage" type="number" step="any" value="100"></label>
-        </div>
-        <button id="updateCalcBtn">Update calculations</button>
-        <div class="button-row">
-          <button id="saveSettingsBtn">Save settings</button>
-          <label class="file-button small">Load settings
-            <input id="settingsFile" type="file" accept=".json,application/json">
-          </label>
-        </div>
-      </section>
+        <section id="axisCard" class="card dashboard-card" data-panel-id="axis">
+          <h2><span class="drag-handle" title="Drag panel">⋮⋮</span>Axis calibration</h2>
+          <p id="axisHint" class="axis-hint hidden"></p>
+          <div class="axis-grid">
+            <label>X min<input id="xmin" type="number" step="any" value="0"></label>
+            <label>X max<input id="xmax" type="number" step="any" value="5"></label>
+            <label>Y min<input id="ymin" type="number" step="any" value="0"></label>
+            <label>Y max<input id="ymax" type="number" step="any" value="120"></label>
+          </div>
+          <button id="reextractBtn">Confirm axes and re-extract curve</button>
+        </section>
 
-      <section class="card result-card">
-        <h2>Tensile test results</h2>
-        <pre id="results">No analysis yet.</pre>
-        <h2 class="export-heading">Exports</h2>
-        <div class="downloads">
-          <button data-export="xlsx">Excel</button>
-          <button data-export="pdf">PDF</button>
-          <button data-export="csv">CSV</button>
-          <button data-export="png">Corrected PNG</button>
-        </div>
-      </section>
+        <section id="sampleCard" class="card dashboard-card" data-panel-id="sample">
+          <h2><span class="drag-handle" title="Drag panel">⋮⋮</span>Sample and modulus settings</h2>
+          <div class="grid2">
+            <label>Gauge length (mm)<input id="gauge" type="number" step="any" value="50"></label>
+            <label>Sample width (mm)<input id="width" type="number" step="any" value="15"></label>
+            <label>Thickness (µm)<input id="thickness" type="number" step="any" value="120"></label>
+            <label>Grammage (g/m²)<input id="grammage" type="number" step="any" value="100"></label>
+          </div>
+          <button id="updateCalcBtn">Update calculations</button>
+          <div class="button-row">
+            <button id="saveSettingsBtn">Save settings</button>
+            <label class="file-button small">Load settings
+              <input id="settingsFile" type="file" accept=".json,application/json">
+            </label>
+          </div>
+        </section>
 
-      <section class="card">
-        <h2>Instrument output values</h2>
-        <div class="grid2">
-          <label>Extension (mm)<input id="elongation" type="number" step="any"></label>
-          <label>Maximum force (N)<input id="maxForce" type="number" step="any"></label>
-        </div>
-        <button id="editedBtn">Use edited instrument values</button>
-        <button id="trainBtn">Teach recognizer from edited values</button>
-        <p class="warning">Teaching updates the shared recognizer used by this deployment.</p>
-      </section>
+        <section id="instrumentCard" class="card dashboard-card" data-panel-id="instrument">
+          <h2><span class="drag-handle" title="Drag panel">⋮⋮</span>Instrument output values</h2>
+          <div class="grid2">
+            <label>Extension (mm)<input id="elongation" type="number" step="any"></label>
+            <label>Maximum force (N)<input id="maxForce" type="number" step="any"></label>
+          </div>
+          <button id="editedBtn">Use edited instrument values</button>
+          <button id="trainBtn">Teach recognizer from edited values</button>
+          <p class="warning">Teaching updates the shared recognizer used by this deployment.</p>
+        </section>
+
+      </div>
+
+      <div id="resultColumn" class="panel-column" data-layout-column="results">
+
+        <section id="resultCard" class="card dashboard-card result-card" data-panel-id="results">
+          <h2><span class="drag-handle" title="Drag panel">⋮⋮</span>Tensile test results</h2>
+          <pre id="results">No analysis yet.</pre>
+          <h2 class="export-heading">Exports</h2>
+          <div class="downloads">
+            <button data-export="xlsx">Excel</button>
+            <button data-export="pdf">PDF</button>
+            <button data-export="png">Corrected PNG</button>
+          </div>
+        </section>
+
+      </div>
     </aside>
   </section>
 </main>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>

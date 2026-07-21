@@ -54,15 +54,16 @@ after session expiry or pod replacement. Do not enable request-body logging.
 - Reorganized results and exports beside the input settings and reduced image-view height.
 
 
-## Version 3 interaction changes
+## Version 4 interface changes
 
-- Choosing an image displays it immediately in the Original / screen corners tab.
-- Analysis starts automatically; a compliant result screen opens in the Corrected screen tab when ready.
-- Uploaded images are checked for the expected completed-test layout:
-  - dark Force-versus-extension graph in the lower-left area,
-  - green Elongation value in the second top result box,
-  - purple MaxForce value in the right result box.
-- The four graph corners are independent and the server perspective-corrects the graph quadrilateral before curve extraction.
-- A substantial graph-boundary change produces a suggested axis min/max value and highlights Axis calibration for confirmation.
-- Hovering over the corrected graph shows extension (mm) and force (N) at the cursor.
-- Magnifiers remain available when dragging screen and graph corners.
+- The result-screen validation message is now shown compactly in the top toolbar.
+- The redundant Fit views button was removed; canvases already refit automatically after tab changes and browser resizing.
+- The right side now uses two deliberate columns:
+  - Axis calibration, sample settings and instrument values in the left column.
+  - Tensile results and exports in the right column.
+- CSV was removed from the user interface because the Excel workbook already contains curve data.
+  The API endpoint remains available for compatibility.
+- Select **Customize panels** to rearrange panels between the two columns and resize their height.
+  Layout changes are stored in browser `localStorage`, so they are restored for the same browser profile
+  on the same computer. They are not synchronized between devices or users.
+- Select **Reset panels** while customization mode is active to restore the default layout.
