@@ -43,3 +43,27 @@ pre { white-space:pre-wrap; margin:0; font-family:Consolas,monospace; font-size:
   .settings { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
   .canvas-wrap { height:60vh; }
 }
+/* v2 usability improvements */
+.status { margin-left:auto; min-width:240px; padding:8px 12px; border-radius:6px; font-weight:700; text-align:center; border:1px solid transparent; }
+.status.ready { color:#175c2f; background:#e9f7ee; border-color:#8cc89f; }
+.status.working { color:#714c00; background:#fff4ce; border-color:#e0b94f; }
+.status.error { color:#9b1c1c; background:#fdecec; border-color:#e29a9a; }
+.canvas-wrap { position:relative; height:58vh; min-height:360px; }
+.magnifier { display:none; position:absolute; right:12px; top:12px; width:230px; height:170px; padding:4px; background:#fff; border:2px solid #ffd400; border-radius:7px; box-shadow:0 3px 14px #0008; pointer-events:none; z-index:5; }
+.magnifier.visible { display:block; }
+.magnifier canvas { width:220px; height:160px; max-width:none; max-height:none; background:#111; }
+.workspace { grid-template-columns:minmax(0,1fr) minmax(560px,42vw); }
+.settings { display:grid; grid-template-columns:1fr 1fr; align-content:start; gap:10px; }
+.settings .card { min-width:0; }
+.result-card pre { max-height:285px; overflow:auto; }
+.export-heading { margin-top:12px; padding-top:10px; border-top:1px solid #d5dde5; }
+@media (max-width:1250px) {
+  .workspace { grid-template-columns:minmax(0,1fr) 500px; }
+  .settings { grid-template-columns:1fr; }
+  .canvas-wrap { height:55vh; }
+}
+@media (max-width:900px) {
+  .workspace { grid-template-columns:1fr; }
+  .settings { grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+  .status { width:100%; margin-left:0; }
+}

@@ -45,3 +45,10 @@ Recommended initial resources:
 
 Uploaded photographs and generated reports are stored under `/tmp` and deleted
 after session expiry or pod replacement. Do not enable request-body logging.
+
+## Version 2 changes
+
+- Persistent training templates configured by `YDL_TEMPLATE_PATH` are now loaded first.
+- Added live magnifiers and crosshairs while screen and graph handles are dragged.
+- Made Working/Ready/Error state prominent.
+- Reorganized results and exports beside the input settings and reduced image-view height.

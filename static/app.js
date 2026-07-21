@@ -8,9 +8,10 @@ let corners = [];
 let graphRect = null;
 let drag = null;
 
-function status(msg, error=false) {
-  $("status").textContent = msg;
-  $("status").style.color = error ? "#b42318" : "";
+function status(msg, error=false, working=false) {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status " + (error ? "error" : working ? "working" : "ready");
 }
 function num(id, fallback=null) {
   const v = parseFloat($(id).value);
@@ -25,7 +26,7 @@ function settingsPayload() {
   };
 }
 async function api(url, options={}) {
-  status("Working…");
+  status("Working — please wait…", false, true);
   const res = await fetch(url, options);
   let data;
   const ct = res.headers.get("content-type") || "";
@@ -140,6 +141,21 @@ function nearest(points,x,y,limit=18) {
   points.forEach((p,i)=>{ const d=Math.hypot(p[0]-x,p[1]-y); if(d<dist){dist=d;best=i;} });
   return dist<=limit?best:-1;
 }
+
+function drawMagnifier(containerId, img, sourceX, sourceY) {
+  const box=$(containerId), c=box.querySelector("canvas"), ctx=c.getContext("2d");
+  const cropW=90, cropH=66;
+  const sx=Math.max(0, Math.min(img.naturalWidth-cropW, sourceX-cropW/2));
+  const sy=Math.max(0, Math.min(img.naturalHeight-cropH, sourceY-cropH/2));
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(img,sx,sy,cropW,cropH,0,0,c.width,c.height);
+  ctx.strokeStyle="#ffd400"; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(c.width/2,0); ctx.lineTo(c.width/2,c.height);
+  ctx.moveTo(0,c.height/2); ctx.lineTo(c.width,c.height/2); ctx.stroke();
+  box.classList.add("visible");
+}
+function hideMagnifier(id){ $(id).classList.remove("visible"); }
 $("originalCanvas").addEventListener("pointerdown",e=>{
   const c=e.currentTarget,s=Number(c.dataset.scale),r=c.getBoundingClientRect();
   const idx=nearest(corners.map(p=>[p[0]*s,p[1]*s]),e.clientX-r.left,e.clientY-r.top);
@@ -148,9 +164,11 @@ $("originalCanvas").addEventListener("pointerdown",e=>{
 $("originalCanvas").addEventListener("pointermove",e=>{
   if(!drag||drag.type!=="corner")return;
   const c=e.currentTarget,s=Number(c.dataset.scale),r=c.getBoundingClientRect();
-  corners[drag.idx]=[(e.clientX-r.left)/s,(e.clientY-r.top)/s]; drawOriginal();
+  const ix=(e.clientX-r.left)/s, iy=(e.clientY-r.top)/s;
+  corners[drag.idx]=[ix,iy]; drawOriginal(); drawMagnifier("originalMagnifier",originalImage,ix,iy);
 });
-$("originalCanvas").addEventListener("pointerup",()=>drag=null);
+$("originalCanvas").addEventListener("pointerup",()=>{drag=null;hideMagnifier("originalMagnifier");});
+$("originalCanvas").addEventListener("pointerleave",()=>{if(!drag)hideMagnifier("originalMagnifier");});
 
 $("screenCanvas").addEventListener("pointerdown",e=>{
   const c=e.currentTarget,s=Number(c.dataset.scale),r=c.getBoundingClientRect();
@@ -167,9 +185,10 @@ $("screenCanvas").addEventListener("pointermove",e=>{
   if(drag.idx===3){graphRect.x1=x;graphRect.y2=y;}
   if(graphRect.x1>graphRect.x2)[graphRect.x1,graphRect.x2]=[graphRect.x2,graphRect.x1];
   if(graphRect.y1>graphRect.y2)[graphRect.y1,graphRect.y2]=[graphRect.y2,graphRect.y1];
-  drawScreen();
+  drawScreen(); drawMagnifier("screenMagnifier",screenImage,x,y);
 });
-$("screenCanvas").addEventListener("pointerup",()=>drag=null);
+$("screenCanvas").addEventListener("pointerup",()=>{drag=null;hideMagnifier("screenMagnifier");});
+$("screenCanvas").addEventListener("pointerleave",()=>{if(!drag)hideMagnifier("screenMagnifier");});
 
 $("analyzeBtn").onclick=async()=>{
   const file=$("imageFile").files[0];

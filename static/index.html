@@ -19,7 +19,7 @@
     </label>
     <button id="analyzeBtn" class="primary">Analyse</button>
     <button id="fitBtn">Fit views</button>
-    <span id="status">Choose an image to begin.</span>
+    <span id="status" class="status ready" role="status" aria-live="polite">Ready — choose an image to begin.</span>
   </section>
 
   <section class="workspace">
@@ -32,13 +32,13 @@
 
       <div id="originalPanel" class="panel active">
         <p>Drag the yellow handles to the four display corners, then click <b>Apply screen corners</b>.</p>
-        <div class="canvas-wrap"><canvas id="originalCanvas"></canvas></div>
+        <div class="canvas-wrap"><canvas id="originalCanvas"></canvas><div id="originalMagnifier" class="magnifier"><canvas width="220" height="160"></canvas></div></div>
         <button id="applyCornersBtn">Apply screen corners and re-analyse</button>
       </div>
 
       <div id="screenPanel" class="panel">
         <p>Drag the yellow handles to the plotting-grid corners. The rectangle remains axis-aligned.</p>
-        <div class="canvas-wrap"><canvas id="screenCanvas"></canvas></div>
+        <div class="canvas-wrap"><canvas id="screenCanvas"></canvas><div id="screenMagnifier" class="magnifier"><canvas width="220" height="160"></canvas></div></div>
         <div class="button-row">
           <button id="applyGraphBtn">Apply graph area and re-extract</button>
           <button id="autoGraphBtn">Auto-detect graph again</button>
@@ -79,6 +79,18 @@
         </div>
       </section>
 
+      <section class="card result-card">
+        <h2>Tensile test results</h2>
+        <pre id="results">No analysis yet.</pre>
+        <h2 class="export-heading">Exports</h2>
+        <div class="downloads">
+          <button data-export="xlsx">Excel</button>
+          <button data-export="pdf">PDF</button>
+          <button data-export="csv">CSV</button>
+          <button data-export="png">Corrected PNG</button>
+        </div>
+      </section>
+
       <section class="card">
         <h2>Instrument output values</h2>
         <div class="grid2">
@@ -88,21 +100,6 @@
         <button id="editedBtn">Use edited instrument values</button>
         <button id="trainBtn">Teach recognizer from edited values</button>
         <p class="warning">Teaching updates the shared recognizer used by this deployment.</p>
-      </section>
-
-      <section class="card">
-        <h2>Tensile test results</h2>
-        <pre id="results">No analysis yet.</pre>
-      </section>
-
-      <section class="card">
-        <h2>Exports</h2>
-        <div class="downloads">
-          <button data-export="xlsx">Excel</button>
-          <button data-export="pdf">PDF</button>
-          <button data-export="csv">CSV</button>
-          <button data-export="png">Corrected PNG</button>
-        </div>
       </section>
     </aside>
   </section>

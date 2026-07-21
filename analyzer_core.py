@@ -702,12 +702,14 @@ def _coerce_template_glyph(glyph: np.ndarray,
 def _load_digit_template_arrays() -> dict[str, list[np.ndarray]]:
     """Load trained templates.
 
-    User-trained templates are tried first. If they do not exist, the packaged
-    digit_templates.npz is used, and if that is also missing the embedded
-    fallback templates are loaded. Loaded glyphs are normalized to one shape so
-    that future saving cannot fail because of mixed template dimensions.
+    The persistent Rahti training file configured by YDL_TEMPLATE_PATH is tried
+    first. User-trained templates are then tried before the packaged templates
+    and finally the embedded fallback. Loaded glyphs are normalized to one shape.
     """
     paths = []
+    env_path = os.environ.get("YDL_TEMPLATE_PATH", "").strip()
+    if env_path:
+        paths.append(Path(env_path))
     try:
         script_dir = Path(__file__).resolve().parent
         paths.append(script_dir / "digit_templates_user.npz")
