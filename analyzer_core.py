@@ -304,6 +304,8 @@ class AnalysisResult:
     mechanical_note: str = ""
     test_datetime: str = ""
     test_datetime_source: str = ""
+    manual_break_extension: Optional[float] = None
+    break_is_manual: bool = False
 
 
 # ----------------------------- Image utilities ----------------------------- #
@@ -1925,6 +1927,8 @@ def calculate_mechanical_properties(result: AnalysisResult,
     a true Young's modulus in MPa is also calculated as
     slope * gauge_length / (width * thickness).
     """
+    manual_break_extension = result.manual_break_extension
+    result.break_is_manual = False
     result.elongation_data = None
     result.max_force_data = None
     result.elongation_text_percent = None
@@ -1954,9 +1958,26 @@ def calculate_mechanical_properties(result: AnalysisResult,
         return
 
     result.max_force_data = float(np.nanmax(y_raw))
-    break_idx, break_note = detect_break_index_from_force_drop(x, y, result.elongation, peak_force)
-    result.elongation_data = float(x[break_idx])
-    result.mechanical_note = break_note
+    auto_break_idx, break_note = detect_break_index_from_force_drop(
+        x, y, result.elongation, peak_force
+    )
+
+    use_manual_break = (
+        manual_break_extension is not None
+        and np.isfinite(manual_break_extension)
+        and float(x[0]) <= float(manual_break_extension) <= float(x[-1])
+    )
+    if use_manual_break:
+        break_idx = int(np.nanargmin(np.abs(x - float(manual_break_extension))))
+        result.elongation_data = float(x[break_idx])
+        result.manual_break_extension = result.elongation_data
+        result.break_is_manual = True
+        result.mechanical_note = "break extension manually selected"
+    else:
+        break_idx = auto_break_idx
+        result.elongation_data = float(x[break_idx])
+        result.break_is_manual = False
+        result.mechanical_note = break_note
     result.break_line_x = result.elongation_data
 
     if gauge_length_mm and gauge_length_mm > 0:
@@ -2157,7 +2178,8 @@ def draw_curve_overlay(out: np.ndarray, result: AnalysisResult) -> None:
         if p_bottom and p_top:
             cv2.line(out, p_bottom, p_top, (0, 0, 0), thickness + 3, cv2.LINE_AA)
             cv2.line(out, p_bottom, p_top, (0, 255, 255), thickness, cv2.LINE_AA)
-            cv2.putText(out, f"Break {result.break_line_x:.2f} mm", (p_top[0] + 8, max(24, p_top[1] + 28)),
+            break_text = f"Break {result.break_line_x:.2f} mm" + (" (manual)" if result.break_is_manual else "")
+            cv2.putText(out, break_text, (p_top[0] + 8, max(24, p_top[1] + 28)),
                         cv2.FONT_HERSHEY_SIMPLEX, max(.45, out.shape[1]/2600),
                         (0, 255, 255), max(1, thickness), cv2.LINE_AA)
 
@@ -2311,29 +2333,36 @@ def draw_analysis_graph(result: AnalysisResult,
         xp = np.asarray([], dtype=float)
         yf = np.asarray([], dtype=float)
 
-    max_x_candidates = []
-    if len(xp):
-        max_x_candidates.append(float(np.nanmax(xp) * 1.20))
-    if result.elongation_text_percent is not None:
-        max_x_candidates.append(float(result.elongation_text_percent * 1.20))
-    if result.elongation_data_percent is not None:
-        max_x_candidates.append(float(result.elongation_data_percent * 1.20))
-    if not max_x_candidates:
-        max_x_candidates.append(100.0)
-    x_min_pct = 0.0
-    x_max_pct = _nice_axis_max(max(max_x_candidates), 2.0)
+    # Display about 30 % headroom beyond the actual extracted data.
+    # The top axis is extension [mm], while the bottom axis is the equivalent
+    # tensile strain [%].
+    if len(curve):
+        largest_extension_mm = float(np.nanmax(curve[:, 0]))
+    elif result.elongation_data is not None:
+        largest_extension_mm = float(result.elongation_data)
+    elif result.elongation is not None:
+        largest_extension_mm = float(result.elongation)
+    else:
+        largest_extension_mm = 5.0
 
-    max_y_candidates = []
+    raw_x_max_mm = max(0.1, largest_extension_mm * 1.30)
+    x_nice_step_mm = 0.25 if raw_x_max_mm <= 3.0 else 0.5 if raw_x_max_mm <= 6.0 else 1.0
+    x_max_mm = float(math.ceil(raw_x_max_mm / x_nice_step_mm) * x_nice_step_mm)
+    x_min_pct = 0.0
+    x_max_pct = x_max_mm / gauge_length_mm * 100.0
+
+    force_candidates = []
     if len(yf):
-        max_y_candidates.append(float(np.nanmax(yf) * 1.20))
+        force_candidates.append(float(np.nanmax(yf)))
     if result.max_force is not None:
-        max_y_candidates.append(float(result.max_force * 1.20))
+        force_candidates.append(float(result.max_force))
     if result.max_force_data is not None:
-        max_y_candidates.append(float(result.max_force_data * 1.20))
-    if not max_y_candidates:
-        max_y_candidates.append(120.0)
+        force_candidates.append(float(result.max_force_data))
+    peak_for_axis = max(force_candidates) if force_candidates else 120.0
+    raw_y_max = max(1.0, peak_for_axis * 1.30)
+    y_step_nice = 5.0 if raw_y_max <= 80 else 10.0 if raw_y_max <= 200 else 20.0
     y_min = 0.0
-    y_max = _nice_axis_max(max(max_y_candidates), 10.0)
+    y_max = float(math.ceil(raw_y_max / y_step_nice) * y_step_nice)
 
     def px(xpct: float) -> int:
         return int(round(plot.x1 + (xpct - x_min_pct) / max(x_max_pct - x_min_pct, 1e-9) * plot.width))
@@ -2428,8 +2457,23 @@ def draw_analysis_graph(result: AnalysisResult,
         draw, plot.x1 + plot.width // 2, plot.y1 - 60,
         "Extension (mm)", axis_font, (0, 0, 0)
     )
-    _draw_center_text(draw, plot.x1 + plot.width // 2, height - 50, "Tensile strain (%)", axis_font, (0, 0, 0))
-    draw.text((plot.x1 - 88, plot.y1 - 72), "Force (N)", font=axis_font, fill=(0, 0, 0))
+    _draw_center_text(
+        draw, plot.x1 + plot.width // 2, height - 50,
+        "Tensile strain (%)", axis_font, (0, 0, 0)
+    )
+
+    # Draw the force-axis title vertically and centre it beside the y axis.
+    force_label = "Force (N)"
+    bbox = _text_bbox(draw, (0, 0), force_label, axis_font)
+    label_w = max(1, bbox[2] - bbox[0] + 12)
+    label_h = max(1, bbox[3] - bbox[1] + 12)
+    label_img = Image.new("RGBA", (label_w, label_h), (255, 255, 255, 0))
+    label_draw = ImageDraw.Draw(label_img)
+    label_draw.text((6 - bbox[0], 6 - bbox[1]), force_label, font=axis_font, fill=(0, 0, 0, 255))
+    label_img = label_img.rotate(90, expand=True, resample=Image.Resampling.BICUBIC)
+    label_x = max(8, plot.x1 - 82)
+    label_y = plot.y1 + (plot.height - label_img.height) // 2
+    image.paste(label_img, (label_x, label_y), label_img)
 
     # Curve
     if len(xp) >= 2:
@@ -2458,7 +2502,8 @@ def draw_analysis_graph(result: AnalysisResult,
         if plot.x1 <= xpix <= plot.x2:
             draw.line((xpix, plot.y1, xpix, plot.y2), fill=(0, 0, 0), width=5)
             draw.line((xpix, plot.y1, xpix, plot.y2), fill=(10, 160, 150), width=3)
-            draw.text((xpix + 8, plot.y1 + 18), "curve break extension", font=small_bold, fill=(0, 120, 115))
+            break_caption = "curve break extension (manual)" if result.break_is_manual else "curve break extension"
+            draw.text((xpix + 8, plot.y1 + 18), break_caption, font=small_bold, fill=(0, 120, 115))
     if result.elongation_text_percent is not None:
         xpix = px(result.elongation_text_percent)
         if plot.x1 <= xpix <= plot.x2:
@@ -2483,8 +2528,14 @@ def draw_analysis_graph(result: AnalysisResult,
     rows = [
         ("Instrument extension", f"{fmt_fixed_graph(result.elongation)} mm"),
         ("Instrument strain", f"{fmt_fixed_graph(result.elongation_text_percent)} %"),
-        ("Curve break extension", f"{fmt_fixed_graph(result.elongation_data)} mm"),
-        ("Curve strain at break", f"{fmt_fixed_graph(result.elongation_data_percent)} %"),
+        (
+            "Curve break extension" + (" (manual)" if result.break_is_manual else ""),
+            f"{fmt_fixed_graph(result.elongation_data)} mm"
+        ),
+        (
+            "Curve strain at break" + (" (manual)" if result.break_is_manual else ""),
+            f"{fmt_fixed_graph(result.elongation_data_percent)} %"
+        ),
         ("Instrument max force", f"{fmt_fixed_graph(result.max_force)} N"),
         ("Curve maximum force", f"{fmt_fixed_graph(result.max_force_data)} N"),
         ("Initial slope", f"{fmtv(result.elastic_slope_n_per_mm)} N/mm"),
@@ -2536,12 +2587,14 @@ def draw_analysis_graph(result: AnalysisResult,
     draw.line((plot.x1 + 122, legend_y, plot.x1 + 164, legend_y), fill=(0, 90, 180), width=4)
     draw.text((plot.x1 + 172, legend_y - 10), "modulus fit", font=small_font, fill=(60, 60, 60))
     draw.line((plot.x1 + 290, legend_y - 15, plot.x1 + 290, legend_y + 15), fill=(10, 160, 150), width=4)
-    draw.text((plot.x1 + 300, legend_y - 10), "break extension", font=small_font, fill=(60, 60, 60))
+    legend_break = "break extension (manual)" if result.break_is_manual else "break extension"
+    draw.text((plot.x1 + 300, legend_y - 10), legend_break, font=small_font, fill=(60, 60, 60))
 
     meta = {
         "plot": plot,
         "x_min_pct": x_min_pct,
         "x_max_pct": x_max_pct,
+        "x_max_mm": x_max_mm,
         "y_min": y_min,
         "y_max": y_max,
     }
@@ -2739,8 +2792,18 @@ def export_analysis_xlsx(path: str | Path, result: AnalysisResult, source_path: 
         ["Result", "Value", "Unit", "Source/notes"],
         ["Extension at break from instrument output", result.elongation, "mm", result.elongation_source],
         ["Tensile strain at break from instrument output", result.elongation_text_percent, "%", "extension / gauge length"],
-        ["Extension at break from extracted curve", result.elongation_data, "mm", "detected from extracted curve"],
-        ["Tensile strain at break from extracted curve", result.elongation_data_percent, "%", "extension / gauge length"],
+        [
+            "Extension at break from extracted curve" + (" (manual)" if result.break_is_manual else ""),
+            result.elongation_data,
+            "mm",
+            "manually selected from analysis graph" if result.break_is_manual else "detected from extracted curve",
+        ],
+        [
+            "Tensile strain at break from extracted curve" + (" (manual)" if result.break_is_manual else ""),
+            result.elongation_data_percent,
+            "%",
+            "manual extension / gauge length" if result.break_is_manual else "extension / gauge length",
+        ],
         ["Maximum force from instrument output", result.max_force, "N", result.max_force_source],
         ["Maximum force from extracted curve", result.max_force_data, "N", "maximum of extracted curve"],
         ["Initial force-extension slope", result.elastic_slope_n_per_mm, "N/mm", f"linear fit R²={result.modulus_r2:.4f}" if result.modulus_r2 is not None else ""],
@@ -2765,7 +2828,10 @@ def export_analysis_xlsx(path: str | Path, result: AnalysisResult, source_path: 
         x1, y1, x2, y2 = result.modulus_line
         rows_fit.append(["Tensile modulus fit line", x1, y1, x2, y2])
     if result.break_line_x is not None:
-        rows_fit.append(["Break-extension vertical line", result.break_line_x, result.y_min, result.break_line_x, result.y_max])
+        rows_fit.append([
+            "Break-extension vertical line" + (" (manual)" if result.break_is_manual else ""),
+            result.break_line_x, result.y_min, result.break_line_x, result.y_max
+        ])
     rows_graph = [["Analysis graph"], ["The same generated graph shown in the GUI is embedded below."]]
 
     graph_png = None

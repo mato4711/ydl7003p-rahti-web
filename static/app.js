@@ -12,11 +12,16 @@ let graphCorners = [];
 let drag = null;
 let previewUrl = null;
 let analysisSerial = 0;
+let analysisMeta = null;
 
 function status(message, kind="ready") {
   const el = $("status");
   el.textContent = message;
   el.className = `status ${kind}`;
+}
+
+function setBusy(busy) {
+  document.body.classList.toggle("busy", busy);
 }
 
 function setTab(panelId) {
@@ -45,16 +50,21 @@ function settingsPayload() {
 
 async function api(url, options={}) {
   status("Working — please wait…", "working");
-  const response = await fetch(url, options);
-  const type = response.headers.get("content-type") || "";
-  const data = type.includes("json") ? await response.json() : await response.text();
-  if (!response.ok) {
-    const detail = data?.detail;
-    const message = typeof detail === "string" ? detail : (detail?.message || data || `HTTP ${response.status}`);
-    status(message, "error");
-    throw new Error(message);
+  setBusy(true);
+  try {
+    const response = await fetch(url, options);
+    const type = response.headers.get("content-type") || "";
+    const data = type.includes("json") ? await response.json() : await response.text();
+    if (!response.ok) {
+      const detail = data?.detail;
+      const message = typeof detail === "string" ? detail : (detail?.message || data || `HTTP ${response.status}`);
+      status(message, "error");
+      throw new Error(message);
+    }
+    return data;
+  } finally {
+    setBusy(false);
   }
-  return data;
 }
 
 function loadImage(image, url) {
@@ -128,8 +138,37 @@ function applyAxisSuggestions(suggestions) {
   return true;
 }
 
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function currentLocalDateTimeText() {
+  const now = new Date();
+  return `${now.getFullYear()}/${pad2(now.getMonth()+1)}/${pad2(now.getDate())} ` +
+         `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+}
+
+function setDateTimeInputs(text) {
+  const match = String(text || "").match(
+    /^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/
+  );
+  if (!match) return false;
+  $("testDate").value = `${match[1]}-${match[2]}-${match[3]}`;
+  $("testTime").value = `${match[4]}:${match[5]}:${match[6]}`;
+  return true;
+}
+
+function dateTimeFromInputs() {
+  const date = $("testDate").value;
+  let time = $("testTime").value;
+  if (!date || !time) return null;
+  if (/^\d{2}:\d{2}$/.test(time)) time += ":00";
+  return `${date.replaceAll("-", "/")} ${time}`;
+}
+
 async function applyResponse(data, options={}) {
   session = data;
+  analysisMeta = data.analysis_graph_meta || null;
   corners = (data.screen_corners || []).map(p => [...p]);
   if (data.result.graph_corners) {
     graphCorners = data.result.graph_corners.map(p => [...p]);
@@ -150,6 +189,13 @@ async function applyResponse(data, options={}) {
   $("grammage").value = data.settings.grammage_g_m2 ?? "";
   $("elongation").value = data.result.elongation ?? "";
   $("maxForce").value = data.result.max_force ?? "";
+
+  if (setDateTimeInputs(data.result.test_datetime)) {
+    $("datetimeHint").textContent =
+      data.result.test_datetime_source === "timestamp detected"
+        ? "Detected from the tester screen."
+        : "Using the entered or pre-filled date and time.";
+  }
 
   showResults(data.result);
   renderValidation(data.layout_validation);
@@ -192,13 +238,14 @@ function f(value, digits=2) {
 }
 
 function showResults(r) {
+  const manual = r.break_is_manual ? " (manual)" : "";
   $("results").textContent =
 `Test date and time: ${r.test_datetime || "Not detected"}
 
 Instrument extension: ${f(r.elongation)} mm
 Instrument strain: ${f(r.elongation_text_percent)} %
-Curve break extension: ${f(r.elongation_data)} mm
-Curve strain at break: ${f(r.elongation_data_percent)} %
+Curve break extension${manual}: ${f(r.elongation_data)} mm
+Curve strain at break${manual}: ${f(r.elongation_data_percent)} %
 
 Instrument max force: ${f(r.max_force)} N
 Curve maximum force: ${f(r.max_force_data)} N
@@ -285,8 +332,9 @@ function drawScreen() {
 function drawAnalysis() {
   if (!analysisImage.naturalWidth) return;
   const canvas = $("analysisCanvas");
-  fitCanvas(canvas, analysisImage);
+  const scale = fitCanvas(canvas, analysisImage);
   canvas.getContext("2d").drawImage(analysisImage, 0, 0, canvas.width, canvas.height);
+  canvas.dataset.scale = scale;
 }
 
 function redrawAll() {
@@ -484,7 +532,28 @@ async function runAnalysis(file) {
     if (value !== null) form.append(key, value);
   });
   try {
-    const data = await api("/api/analyze", {method:"POST", body:form});
+    let data = await api("/api/analyze", {method:"POST", body:form});
+    if (serial !== analysisSerial) return;
+
+    // When the tester timestamp cannot be read, use the user's current local
+    // date and time as an immediately editable default, and save it server-side
+    // so it is included in the graph and all exports.
+    if (!data.result.test_datetime) {
+      const fallbackDateTime = currentLocalDateTimeText();
+      const payload = {
+        ...data.settings,
+        x_min:data.result.x_min, x_max:data.result.x_max,
+        y_min:data.result.y_min, y_max:data.result.y_max,
+        test_datetime:fallbackDateTime,
+        test_datetime_source:"current browser time (prefilled)"
+      };
+      data = await api(`/api/session/${data.session_id}/update`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload)
+      });
+    }
+
     if (serial !== analysisSerial) return;
     await applyResponse(data, {initial:true});
   } catch (error) {
@@ -573,6 +642,47 @@ $("trainBtn").onclick = async () => {
     console.error(error);
   }
 };
+
+$("updateDateTimeBtn").onclick = async () => {
+  const value = dateTimeFromInputs();
+  if (!value) {
+    status("Enter both a date and a time.", "error");
+    return;
+  }
+  await update({
+    test_datetime:value,
+    test_datetime_source:"user entered"
+  });
+};
+
+$("analysisCanvas").addEventListener("click", async event => {
+  if (!event.ctrlKey || event.button !== 0 || !session || !analysisMeta?.plot) return;
+
+  event.preventDefault();
+  const canvas = event.currentTarget;
+  const scale = Number(canvas.dataset.scale || 1);
+  const rect = canvas.getBoundingClientRect();
+  const imageX = (event.clientX - rect.left) / scale;
+  const imageY = (event.clientY - rect.top) / scale;
+  const plot = analysisMeta.plot;
+
+  if (
+    imageX < plot.x1 || imageX > plot.x2 ||
+    imageY < plot.y1 || imageY > plot.y2
+  ) {
+    return;
+  }
+
+  const fraction = (imageX - plot.x1) / Math.max(1, plot.x2 - plot.x1);
+  const strainPercent =
+    analysisMeta.x_min_pct +
+    fraction * (analysisMeta.x_max_pct - analysisMeta.x_min_pct);
+  const extensionMm = strainPercent * num("gauge", 50) / 100.0;
+
+  status(`Manual break point selected at approximately ${extensionMm.toFixed(3)} mm.`, "working");
+  await update({manual_break_extension:extensionMm});
+  setTab("graphPanel");
+});
 
 window.addEventListener("resize", () => setTimeout(redrawAll, 100));
 
@@ -715,7 +825,7 @@ function resetPanelLayout() {
   const controls = $("controlColumn");
   const results = $("resultColumn");
   ["axisCard", "sampleCard", "instrumentCard"].forEach(id => controls.appendChild($(id)));
-  results.appendChild($("resultCard"));
+  ["datetimeCard", "resultCard"].forEach(id => results.appendChild($(id)));
   dashboardCards().forEach(card => {
     card.style.height = "";
   });

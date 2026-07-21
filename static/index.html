@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>YDL-7003-P data analyzer</title>
-  <link rel="stylesheet" href="/static/style.css?v=5">
+  <link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body>
 <header>
@@ -19,9 +19,9 @@
     </label>
     <button id="analyzeBtn" class="primary" disabled>Re-analyse chosen image</button>
 
-    <section id="layoutNotice" class="layout-notice hidden" role="alert"></section>
-
     <span id="status" class="status ready" role="status" aria-live="polite">Ready — choose an image to begin.</span>
+
+    <section id="layoutNotice" class="layout-notice hidden" role="alert"></section>
 
     <button id="customizeLayoutBtn" class="layout-button" type="button"
             title="Rearrange and resize the information panels">
@@ -114,6 +114,16 @@
 
       <div id="resultColumn" class="panel-column" data-layout-column="results">
 
+        <section id="datetimeCard" class="card dashboard-card datetime-card" data-panel-id="datetime">
+          <h2><span class="drag-handle" title="Drag panel">⋮⋮</span>Test date and time</h2>
+          <div class="datetime-grid">
+            <label>Date<input id="testDate" type="date"></label>
+            <label>Time<input id="testTime" type="time" step="1"></label>
+          </div>
+          <button id="updateDateTimeBtn">Use date and time</button>
+          <p id="datetimeHint" class="datetime-hint">Detected from the tester screen when readable.</p>
+        </section>
+
         <section id="resultCard" class="card dashboard-card result-card" data-panel-id="results">
           <h2><span class="drag-handle" title="Drag panel">⋮⋮</span>Tensile test results</h2>
           <pre id="results">No analysis yet.</pre>
@@ -130,6 +140,6 @@
   </section>
 </main>
 
-<script src="/static/app.js?v=5"></script>
+<script src="/static/app.js?v=6"></script>
 </body>
 </html>

@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,7 +27,7 @@ SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = int(os.environ.get("YDL_MAX_UPLOAD_BYTES", str(30 * 1024 * 1024)))
 SESSION_TTL_SECONDS = int(os.environ.get("YDL_SESSION_TTL_SECONDS", str(8 * 3600)))
 
-app = FastAPI(title="YDL-7003-P data analyzer", version="1.1")
+app = FastAPI(title="YDL-7003-P data analyzer", version="1.2")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
 
 _sessions: dict[str, dict[str, Any]] = {}
@@ -93,6 +94,7 @@ def _result_json(result: core.AnalysisResult) -> dict[str, Any]:
         "tensile_stiffness_index_knm_per_kg", "elastic_modulus_mpa",
         "modulus_r2", "break_line_x", "toughness_n_mm", "toughness_mj",
         "mechanical_note", "test_datetime", "test_datetime_source",
+        "manual_break_extension", "break_is_manual",
     )
     data = {name: getattr(result, name) for name in fields}
     for key, value in list(data.items()):
@@ -119,6 +121,32 @@ def _write_png(path: Path, image: np.ndarray) -> None:
     ok = cv2.imwrite(str(path), image)
     if not ok:
         raise RuntimeError(f"Could not save {path.name}")
+
+
+def _normalise_test_datetime(value: Any) -> str:
+    text = str(value or "").strip()
+    try:
+        parsed = datetime.strptime(text, "%Y/%m/%d %H:%M:%S")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Date and time must use YYYY/MM/DD HH:MM:SS.",
+        ) from exc
+    return parsed.strftime("%Y/%m/%d %H:%M:%S")
+
+
+def _analysis_meta_json(meta: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    if not meta:
+        return None
+    result: dict[str, Any] = {}
+    for key, value in meta.items():
+        if isinstance(value, core.Rect):
+            result[key] = _rect_json(value)
+        elif isinstance(value, (np.floating, np.integer)):
+            result[key] = value.item()
+        else:
+            result[key] = value
+    return result
 
 
 
@@ -208,6 +236,7 @@ def _payload(state: dict[str, Any]) -> dict[str, Any]:
         }),
         "axis_suggestions": state.pop("axis_suggestions", None),
         "axis_auto_updated": bool(state.pop("axis_auto_updated", False)),
+        "analysis_graph_meta": _analysis_meta_json(state.get("analysis_graph_meta")),
         "settings": {
             "gauge_length_mm": state["gauge_length_mm"],
             "sample_width_mm": state["sample_width_mm"],
@@ -298,6 +327,8 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
     screen_corners = payload.get("screen_corners")
     screen_changed = screen_corners is not None
     if screen_changed:
+        previous_datetime = state["result"].test_datetime
+        previous_datetime_source = state["result"].test_datetime_source
         arr = np.asarray(screen_corners, dtype=np.float32)
         if arr.shape != (4, 2):
             raise HTTPException(status_code=400, detail="screen_corners must contain four [x,y] points.")
@@ -307,6 +338,12 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
             state["rectified"], screen_detection_ok=True
         )
         state["result"] = core.analyze_rectified(state["rectified"])
+        if (
+            previous_datetime
+            and previous_datetime_source in {"user entered", "current browser time (prefilled)"}
+        ):
+            state["result"].test_datetime = previous_datetime
+            state["result"].test_datetime_source = previous_datetime_source
 
     result = state["result"]
 
@@ -384,6 +421,19 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
     if "max_force" in payload:
         result.max_force = _safe_float(payload.get("max_force"), result.max_force)
         result.max_force_source = "user edited"
+
+    if "test_datetime" in payload:
+        result.test_datetime = _normalise_test_datetime(payload.get("test_datetime"))
+        source = str(payload.get("test_datetime_source") or "user entered").strip()
+        result.test_datetime_source = source
+
+    if "manual_break_extension" in payload:
+        value = _safe_float(payload.get("manual_break_extension"), None)
+        if value is None:
+            result.manual_break_extension = None
+            result.break_is_manual = False
+        else:
+            result.manual_break_extension = float(value)
 
     _refresh_outputs(state)
     return JSONResponse(_payload(state))

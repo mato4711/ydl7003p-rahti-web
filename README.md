@@ -69,10 +69,18 @@ after session expiry or pod replacement. Do not enable request-body logging.
 - Select **Reset panels** while customization mode is active to restore the default layout.
 
 
-## Version 5 changes
+## Version 6 changes
 
-- **Auto-detect graph again** now recalculates and updates all four axis-calibration values before re-extracting the curve.
-- Hovering over the selected graph shows both the extension/force coordinates and a live magnified view.
-- The tester date and time are read from the top-right header in `YYYY/MM/DD HH:MM:SS` format.
-- The detected timestamp is shown at the top of the web results, the generated analysis graph, the Excel summary, and PDF report headers.
-- The generated analysis graph now has a secondary top horizontal axis for extension in millimetres; the bottom horizontal axis remains tensile strain in percent.
+- If the tester timestamp is not detected, the browser's current local date and
+  time are saved automatically as an editable default.
+- Date and time have their own panel above the tensile results and are included
+  in the results, graph, Excel workbook and PDF.
+- The generated graph uses approximately 130% of the largest extracted
+  extension and 130% of the larger instrument/curve maximum force as axis
+  limits, rounded to readable values.
+- Hidden manual break correction: hold Ctrl and left-click inside the generated
+  analysis graph. The nearest curve extension is used as the break point and
+  marked `(manual)` in results and exports.
+- The Force (N) title is rotated and vertically centred.
+- The status indicator is directly beside the re-analysis button.
+- During server processing, the page uses a wait cursor and blocks input.
