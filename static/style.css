@@ -283,3 +283,11 @@ pre {
   .layout-notice { order:5; flex-basis:100%; }
   .status { min-width:0; max-width:none; flex:1 1 100%; }
 }
+
+
+#axisCard.auto-updated {
+  outline:3px solid #4ba36a;
+  outline-offset:1px;
+  animation:pulse-auto-axis 1.2s ease-in-out 2;
+}
+@keyframes pulse-auto-axis { 50% { outline-color:#a9d8b7; } }

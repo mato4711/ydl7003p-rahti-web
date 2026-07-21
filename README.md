@@ -67,3 +67,12 @@ after session expiry or pod replacement. Do not enable request-body logging.
   Layout changes are stored in browser `localStorage`, so they are restored for the same browser profile
   on the same computer. They are not synchronized between devices or users.
 - Select **Reset panels** while customization mode is active to restore the default layout.
+
+
+## Version 5 changes
+
+- **Auto-detect graph again** now recalculates and updates all four axis-calibration values before re-extracting the curve.
+- Hovering over the selected graph shows both the extension/force coordinates and a live magnified view.
+- The tester date and time are read from the top-right header in `YYYY/MM/DD HH:MM:SS` format.
+- The detected timestamp is shown at the top of the web results, the generated analysis graph, the Excel summary, and PDF report headers.
+- The generated analysis graph now has a secondary top horizontal axis for extension in millimetres; the bottom horizontal axis remains tensile strain in percent.

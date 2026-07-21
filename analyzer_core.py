@@ -302,6 +302,8 @@ class AnalysisResult:
     toughness_n_mm: Optional[float] = None
     toughness_mj: Optional[float] = None
     mechanical_note: str = ""
+    test_datetime: str = ""
+    test_datetime_source: str = ""
 
 
 # ----------------------------- Image utilities ----------------------------- #
@@ -658,6 +660,136 @@ def ocr_single_number(crop_bgr: np.ndarray) -> tuple[Optional[float], str]:
     _, text, value = candidates[0]
     return value, text
 
+
+
+def _valid_screen_date(value: str) -> Optional[str]:
+    """Validate and normalize a YYYY/MM/DD value."""
+    try:
+        parsed = datetime.strptime(value, "%Y/%m/%d")
+    except (TypeError, ValueError):
+        return None
+    if not (2000 <= parsed.year <= 2199):
+        return None
+    return parsed.strftime("%Y/%m/%d")
+
+
+def _valid_screen_time(value: str) -> Optional[str]:
+    """Validate and normalize a 24-hour HH:MM:SS value."""
+    try:
+        parsed = datetime.strptime(value, "%H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    return parsed.strftime("%H:%M:%S")
+
+
+def _datetime_candidates(text: str) -> tuple[list[str], list[str]]:
+    """Extract valid date and time candidates from noisy OCR output."""
+    compact = re.sub(r"\s+", "", text or "")
+    dates: list[str] = []
+    times: list[str] = []
+
+    for match in re.findall(r"\d{4}/\d{2}/\d{2}", compact):
+        value = _valid_screen_date(match)
+        if value:
+            dates.append(value)
+
+    for match in re.findall(r"\d{2}:\d{2}:\d{2}", compact):
+        value = _valid_screen_time(match)
+        if value:
+            times.append(value)
+
+    # Fallback for OCR that drops separators but otherwise reads all digits.
+    digit_runs = re.findall(r"\d+", compact)
+    for run in digit_runs:
+        if len(run) == 8:
+            value = _valid_screen_date(f"{run[:4]}/{run[4:6]}/{run[6:8]}")
+            if value:
+                dates.append(value)
+        if len(run) == 6:
+            value = _valid_screen_time(f"{run[:2]}:{run[2:4]}:{run[4:6]}")
+            if value:
+                times.append(value)
+
+    return dates, times
+
+
+def detect_screen_datetime(rectified_bgr: np.ndarray) -> tuple[Optional[str], str]:
+    """
+    Read the tester timestamp from the light header at the top right.
+
+    The expected display format is ``YYYY/MM/DD HH:MM:SS``. OCR is restricted
+    to the small header regions and all candidates are validated as real dates
+    and 24-hour times before they are accepted.
+    """
+    if pytesseract is None or rectified_bgr is None or rectified_bgr.size == 0:
+        return None, "pytesseract unavailable"
+
+    h, w = rectified_bgr.shape[:2]
+    if h < 80 or w < 400:
+        return None, "image too small"
+
+    combined = rectified_bgr[
+        0:max(12, int(round(0.080 * h))),
+        int(round(0.700 * w)):min(w, int(round(0.997 * w))),
+    ]
+    date_crop = rectified_bgr[
+        0:max(12, int(round(0.080 * h))),
+        int(round(0.715 * w)):min(w, int(round(0.895 * w))),
+    ]
+    time_crop = rectified_bgr[
+        0:max(12, int(round(0.080 * h))),
+        int(round(0.875 * w)):min(w, int(round(0.997 * w))),
+    ]
+
+    date_scores: dict[str, float] = {}
+    time_scores: dict[str, float] = {}
+
+    def add_text(text: str, score: float) -> None:
+        dates, times = _datetime_candidates(text)
+        for value in dates:
+            date_scores[value] = date_scores.get(value, 0.0) + score
+        for value in times:
+            time_scores[value] = time_scores.get(value, 0.0) + score
+
+    def ocr_variants(crop: np.ndarray, modes: tuple[int, ...], base_score: float) -> None:
+        if crop.size == 0:
+            return
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        big = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        variants = [
+            (big, base_score + 2.0),
+            (cv2.threshold(big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1], base_score),
+        ]
+        for image, variant_score in variants:
+            for psm in modes:
+                try:
+                    text = pytesseract.image_to_string(
+                        image,
+                        config=(
+                            f"--oem 3 --psm {psm} "
+                            "-c tessedit_char_whitelist=0123456789/:"
+                        ),
+                        timeout=1.5,
+                    )
+                except Exception:
+                    continue
+                psm_bonus = 2.0 if psm in (8, 13) else 1.0
+                add_text(text, variant_score + psm_bonus)
+
+    # A combined crop is often read correctly in one pass. Separate crops are
+    # fallback passes and improve robustness when the date or time is faint.
+    ocr_variants(combined, (13, 8, 7), 6.0)
+    if not date_scores:
+        ocr_variants(date_crop, (8, 13, 7), 5.0)
+    if not time_scores:
+        ocr_variants(time_crop, (7, 8, 13), 5.0)
+
+    if not date_scores or not time_scores:
+        return None, "timestamp not confidently detected"
+
+    date_value = max(date_scores.items(), key=lambda item: item[1])[0]
+    time_value = max(time_scores.items(), key=lambda item: item[1])[0]
+    return f"{date_value} {time_value}", "top-right header OCR"
 
 
 # ------------------------- Template value recognizer ------------------------ #
@@ -1918,6 +2050,7 @@ def analyze_rectified(rectified_bgr: np.ndarray) -> AnalysisResult:
     xmin, xmax, ymin, ymax = estimate_axis_limits(rectified_bgr, graph)
     curve = extract_green_curve(rectified_bgr, graph, xmin, xmax, ymin, ymax)
     break_x_est, max_y_est = curve_break_estimates(curve)
+    test_datetime, datetime_note = detect_screen_datetime(rectified_bgr)
 
     elong_roi, max_roi = result_number_rois(rectified_bgr)
 
@@ -1958,6 +2091,8 @@ def analyze_rectified(rectified_bgr: np.ndarray) -> AnalysisResult:
         max_force_source=max_note,
         x_min=xmin, x_max=xmax, y_min=ymin, y_max=ymax,
         curve_xy=curve,
+        test_datetime=test_datetime or "",
+        test_datetime_source=datetime_note,
     )
 
 
@@ -2161,7 +2296,7 @@ def draw_analysis_graph(result: AnalysisResult,
     table_bold = _pil_font(14, True)
 
     margin_left, margin_right = 105, 42
-    margin_top, margin_bottom = 128, 92
+    margin_top, margin_bottom = 205, 92
     table_w = 430
     plot = Rect(margin_left, margin_top, width - margin_right - table_w - 30, height - margin_bottom)
     table = Rect(plot.x2 + 26, margin_top, width - margin_right, plot.y2)
@@ -2206,10 +2341,14 @@ def draw_analysis_graph(result: AnalysisResult,
     def py(force: float) -> int:
         return int(round(plot.y2 - (force - y_min) / max(y_max - y_min, 1e-9) * plot.height))
 
-    # Background and title
+    # Background, title and tester timestamp
     draw.rectangle((0, 0, width, height), fill=(255, 255, 255))
-    draw.text((margin_left, 30), "YDL-7003-P tensile test result", font=title_font, fill=(25, 25, 25))
-    draw.text((margin_left, 67), "Force vs. tensile strain (%)", font=subtitle_font, fill=(85, 85, 85))
+    draw.text((margin_left, 24), "YDL-7003-P tensile test result", font=title_font, fill=(25, 25, 25))
+    datetime_text = result.test_datetime or "Date and time not detected"
+    draw.text((margin_left, 64), f"Test date and time: {datetime_text}",
+              font=subtitle_font, fill=(45, 45, 45))
+    draw.text((margin_left, 94), "Force vs. tensile strain (%)",
+              font=subtitle_font, fill=(85, 85, 85))
 
     # Plot background
     draw.rectangle((plot.x1, plot.y1, plot.x2, plot.y2), fill=(252, 252, 252), outline=(30, 30, 30), width=2)
@@ -2242,6 +2381,13 @@ def draw_analysis_graph(result: AnalysisResult,
             return f"{int(round(v))}"
         return f"{v:.1f}".rstrip("0").rstrip(".")
 
+    def fmt_extension_tick(v: float) -> str:
+        if abs(v - round(v)) < 1e-9:
+            return f"{int(round(v))}"
+        if abs(v * 10.0 - round(v * 10.0)) < 1e-9:
+            return f"{v:.1f}".rstrip("0").rstrip(".")
+        return f"{v:.2f}".rstrip("0").rstrip(".")
+
     # Minor grid, including vertical grid lines.
     tick = minor_x
     while tick < x_max_pct - 1e-9:
@@ -2261,6 +2407,14 @@ def draw_analysis_graph(result: AnalysisResult,
         draw.line((xpix, plot.y1, xpix, plot.y2), fill=(178, 178, 178), width=2)
         draw.line((xpix, plot.y2, xpix, plot.y2 + 7), fill=(0, 0, 0), width=1)
         _draw_center_text(draw, xpix, plot.y2 + 12, fmt_tick(x_tick), tick_font, (45, 45, 45))
+
+        # Secondary top axis: the same x positions expressed as extension in mm.
+        extension_mm = x_tick * gauge_length_mm / 100.0
+        draw.line((xpix, plot.y1 - 7, xpix, plot.y1), fill=(0, 0, 0), width=1)
+        _draw_center_text(
+            draw, xpix, plot.y1 - 31, fmt_extension_tick(extension_mm),
+            tick_font, (45, 45, 45)
+        )
         x_tick += x_step
     y_tick = 0.0
     while y_tick <= y_max + 1e-9:
@@ -2270,8 +2424,12 @@ def draw_analysis_graph(result: AnalysisResult,
         _draw_right_text(draw, plot.x1 - 12, ypix - 8, fmt_tick(y_tick), tick_font, (45, 45, 45))
         y_tick += y_step
     draw.rectangle((plot.x1, plot.y1, plot.x2, plot.y2), outline=(30, 30, 30), width=2)
+    _draw_center_text(
+        draw, plot.x1 + plot.width // 2, plot.y1 - 60,
+        "Extension (mm)", axis_font, (0, 0, 0)
+    )
     _draw_center_text(draw, plot.x1 + plot.width // 2, height - 50, "Tensile strain (%)", axis_font, (0, 0, 0))
-    draw.text((plot.x1 - 88, plot.y1 - 30), "Force (N)", font=axis_font, fill=(0, 0, 0))
+    draw.text((plot.x1 - 88, plot.y1 - 72), "Force (N)", font=axis_font, fill=(0, 0, 0))
 
     # Curve
     if len(xp) >= 2:
@@ -2372,7 +2530,7 @@ def draw_analysis_graph(result: AnalysisResult,
                 note_y += 14
 
     # Legend
-    legend_y = 96
+    legend_y = 132
     draw.line((plot.x1, legend_y, plot.x1 + 42, legend_y), fill=(235, 105, 20), width=4)
     draw.text((plot.x1 + 50, legend_y - 10), "curve", font=small_font, fill=(60, 60, 60))
     draw.line((plot.x1 + 122, legend_y, plot.x1 + 164, legend_y), fill=(0, 90, 180), width=4)
@@ -2438,7 +2596,8 @@ def _make_pdf_image_page(image_bgr: np.ndarray, title: str, subtitle: str,
 
 def export_analysis_pdf(path: str | Path, source_path: Optional[Path],
                         analysis_graph_bgr: Optional[np.ndarray],
-                        annotated_screen_bgr: Optional[np.ndarray]) -> None:
+                        annotated_screen_bgr: Optional[np.ndarray],
+                        test_datetime: str = "") -> None:
     """
     Export a compact PDF report.
 
@@ -2449,7 +2608,12 @@ def export_analysis_pdf(path: str | Path, source_path: Optional[Path],
     if analysis_graph_bgr is None or analysis_graph_bgr.size == 0:
         raise RuntimeError("The analysis graph is not available.")
     source = source_path.name if source_path else ""
-    subtitle = f"Source image: {source}" if source else ""
+    subtitle_parts = []
+    if source:
+        subtitle_parts.append(f"Source image: {source}")
+    if test_datetime:
+        subtitle_parts.append(f"Test date and time: {test_datetime}")
+    subtitle = "  |  ".join(subtitle_parts)
 
     pages: list[Image.Image] = [
         _make_pdf_image_page(analysis_graph_bgr, "YDL-7003-P tensile test result", subtitle)
@@ -2566,6 +2730,7 @@ def export_analysis_xlsx(path: str | Path, result: AnalysisResult, source_path: 
     rows_summary = [
         ["YDL-7003-P data analyzer", ""],
         ["Source image", source_path.name if source_path else ""],
+        ["Test date and time", result.test_datetime or "Not detected"],
         ["Gauge length / test length", gauge_length_mm, "mm"],
         ["Sample width", sample_width_mm, "mm"],
         ["Thickness", thickness_um if thickness_um is not None else "", "µm"],

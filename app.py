@@ -92,7 +92,7 @@ def _result_json(result: core.AnalysisResult) -> dict[str, Any]:
         "elastic_slope_n_per_mm", "tensile_stiffness_kn_per_m",
         "tensile_stiffness_index_knm_per_kg", "elastic_modulus_mpa",
         "modulus_r2", "break_line_x", "toughness_n_mm", "toughness_mj",
-        "mechanical_note",
+        "mechanical_note", "test_datetime", "test_datetime_source",
     )
     data = {name: getattr(result, name) for name in fields}
     for key, value in list(data.items()):
@@ -207,6 +207,7 @@ def _payload(state: dict[str, Any]) -> dict[str, Any]:
             "compliant": True, "score": 1.0, "issues": [], "checks": {}
         }),
         "axis_suggestions": state.pop("axis_suggestions", None),
+        "axis_auto_updated": bool(state.pop("axis_auto_updated", False)),
         "settings": {
             "gauge_length_mm": state["gauge_length_mm"],
             "sample_width_mm": state["sample_width_mm"],
@@ -353,6 +354,14 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
     if payload.get("auto_graph"):
         result.graph_plot = core.find_graph_plot(state["rectified"])
         result.graph_corners = core.graph_corners_from_rect(result.graph_plot)
+        (
+            result.x_min, result.x_max,
+            result.y_min, result.y_max,
+        ) = core.estimate_axis_limits(state["rectified"], result.graph_plot)
+        state["axis_auto_updated"] = True
+        # Auto-detection is a fresh calibration, so old manual suggestions no
+        # longer apply.
+        state.pop("axis_suggestions", None)
         graph_changed = True
 
     if result.graph_plot is not None and (
@@ -441,7 +450,13 @@ def export_png(session_id: str) -> FileResponse:
 def export_pdf(session_id: str) -> FileResponse:
     state = _state(session_id)
     path = state["dir"] / "analysis.pdf"
-    core.export_analysis_pdf(path, state["source_path"], state["analysis_graph"], state["annotated"])
+    core.export_analysis_pdf(
+        path,
+        state["source_path"],
+        state["analysis_graph"],
+        state["annotated"],
+        state["result"].test_datetime,
+    )
     filename = f"{Path(state['source_name']).stem}_analysis.pdf"
     return FileResponse(path, media_type="application/pdf", filename=filename)
 

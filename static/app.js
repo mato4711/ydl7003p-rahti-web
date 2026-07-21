@@ -4,6 +4,7 @@ const $ = id => document.getElementById(id);
 let session = null;
 let selectedFile = null;
 let originalImage = new Image();
+let rectifiedImage = new Image();
 let screenImage = new Image();
 let analysisImage = new Image();
 let corners = [];
@@ -98,7 +99,7 @@ function escapeHtml(text) {
 }
 
 function clearAxisSuggestion() {
-  $("axisCard").classList.remove("needs-confirmation");
+  $("axisCard").classList.remove("needs-confirmation", "auto-updated");
   $("axisHint").classList.add("hidden");
   $("axisHint").textContent = "";
 }
@@ -155,6 +156,7 @@ async function applyResponse(data, options={}) {
 
   await Promise.all([
     loadImage(originalImage, data.images.original),
+    loadImage(rectifiedImage, data.images.rectified),
     loadImage(screenImage, data.images.annotated),
     loadImage(analysisImage, data.images.analysis_graph)
   ]);
@@ -163,7 +165,15 @@ async function applyResponse(data, options={}) {
   const suggested = applyAxisSuggestions(data.axis_suggestions);
   if (!suggested) {
     clearAxisSuggestion();
-    if (options.initial) {
+    if (data.axis_auto_updated) {
+      $("axisHint").textContent =
+        `Graph and axes auto-detected: X ${data.result.x_min}–${data.result.x_max} mm, ` +
+        `Y ${data.result.y_min}–${data.result.y_max} N.`;
+      $("axisHint").classList.remove("hidden");
+      $("axisCard").classList.add("auto-updated");
+      setTimeout(() => $("axisCard").classList.remove("auto-updated"), 2400);
+      status("Graph area and axis calibration updated automatically.", "ready");
+    } else if (options.initial) {
       if (data.layout_validation?.compliant) {
         setTab("screenPanel");
         status("Analysis ready. Review the corrected screen and graph corners.", "ready");
@@ -183,7 +193,9 @@ function f(value, digits=2) {
 
 function showResults(r) {
   $("results").textContent =
-`Instrument extension: ${f(r.elongation)} mm
+`Test date and time: ${r.test_datetime || "Not detected"}
+
+Instrument extension: ${f(r.elongation)} mm
 Instrument strain: ${f(r.elongation_text_percent)} %
 Curve break extension: ${f(r.elongation_data)} mm
 Curve strain at break: ${f(r.elongation_data_percent)} %
@@ -368,6 +380,7 @@ function showGraphReadout(event) {
   const box = $("graphReadout");
   if (!uv) {
     box.classList.add("hidden");
+    hideMagnifier("screenMagnifier");
     return;
   }
   const xMin = num("xmin", 0), xMax = num("xmax", 5);
@@ -379,6 +392,7 @@ function showGraphReadout(event) {
   box.style.left = `${Math.min(wrapRect.width - 235, Math.max(8, event.clientX - wrapRect.left + 14))}px`;
   box.style.top = `${Math.min(wrapRect.height - 40, Math.max(8, event.clientY - wrapRect.top + 14))}px`;
   box.classList.remove("hidden");
+  drawMagnifier("screenMagnifier", rectifiedImage, source[0], source[1]);
 }
 
 $("originalCanvas").addEventListener("pointerdown", event => {
@@ -443,7 +457,7 @@ $("screenCanvas").addEventListener("pointermove", event => {
     const y = (event.clientY - rect.top) / scale;
     graphCorners[drag.index] = [x,y];
     drawScreen();
-    drawMagnifier("screenMagnifier", screenImage, x, y);
+    drawMagnifier("screenMagnifier", rectifiedImage, x, y);
   } else {
     showGraphReadout(event);
   }
