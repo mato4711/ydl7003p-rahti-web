@@ -40,8 +40,10 @@ main { padding:10px; }
 .status.warning { color:#714c00; background:#fff4ce; border-color:#e0b94f; }
 
 .layout-notice {
-  flex:1 1 390px;
-  min-width:250px;
+  flex:0 1 500px;
+  width:auto;
+  min-width:280px;
+  max-width:500px;
   margin:0;
   padding:7px 10px;
   border-radius:6px;
@@ -280,7 +282,13 @@ pre {
   .settings-dashboard { grid-template-columns:1fr; }
   .axis-grid,.grid2 { grid-template-columns:1fr 1fr; }
   .canvas-wrap { min-height:280px; height:48vh; }
-  .layout-notice { order:5; flex-basis:100%; }
+  .layout-notice {
+    order:5;
+    flex:1 1 100%;
+    width:100%;
+    min-width:0;
+    max-width:none;
+  }
   .status { min-width:0; max-width:none; flex:1 1 100%; }
 }
 
@@ -326,4 +334,13 @@ body.busy .layout-button {
 }
 #analysisCanvas {
   cursor:crosshair;
+}
+
+
+html.busy,
+html.busy body,
+html.busy body *,
+body.busy,
+body.busy * {
+  cursor:wait !important;
 }

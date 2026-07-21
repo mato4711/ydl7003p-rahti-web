@@ -2529,12 +2529,14 @@ def draw_analysis_graph(result: AnalysisResult,
         ("Instrument extension", f"{fmt_fixed_graph(result.elongation)} mm"),
         ("Instrument strain", f"{fmt_fixed_graph(result.elongation_text_percent)} %"),
         (
-            "Curve break extension" + (" (manual)" if result.break_is_manual else ""),
+            "Curve break extension",
             f"{fmt_fixed_graph(result.elongation_data)} mm"
+            + (" (manual)" if result.break_is_manual else "")
         ),
         (
-            "Curve strain at break" + (" (manual)" if result.break_is_manual else ""),
+            "Curve strain at break",
             f"{fmt_fixed_graph(result.elongation_data_percent)} %"
+            + (" (manual)" if result.break_is_manual else "")
         ),
         ("Instrument max force", f"{fmt_fixed_graph(result.max_force)} N"),
         ("Curve maximum force", f"{fmt_fixed_graph(result.max_force_data)} N"),

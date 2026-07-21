@@ -84,3 +84,13 @@ after session expiry or pod replacement. Do not enable request-body logging.
 - The Force (N) title is rotated and vertically centred.
 - The status indicator is directly beside the re-analysis button.
 - During server processing, the page uses a wait cursor and blocks input.
+
+
+## Version 7 changes
+
+- Manual break markers are placed in the value column of the generated
+  parameter table, preventing the parameter labels from colliding with values.
+- The expected-layout confirmation/warning box has a compact maximum width.
+- The wait cursor and input blocking are controlled directly by the Working
+  status. Every `Working — please wait…` state now activates them immediately.
+- Static CSS and JavaScript URLs use version 7 to prevent stale browser caching.

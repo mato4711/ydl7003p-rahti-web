@@ -18,9 +18,11 @@ function status(message, kind="ready") {
   const el = $("status");
   el.textContent = message;
   el.className = `status ${kind}`;
+  setBusy(kind === "working");
 }
 
 function setBusy(busy) {
+  document.documentElement.classList.toggle("busy", busy);
   document.body.classList.toggle("busy", busy);
 }
 
