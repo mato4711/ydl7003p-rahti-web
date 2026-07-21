@@ -1,22 +1,38 @@
 
 const $ = id => document.getElementById(id);
+
 let session = null;
+let selectedFile = null;
 let originalImage = new Image();
 let screenImage = new Image();
 let analysisImage = new Image();
 let corners = [];
-let graphRect = null;
+let graphCorners = [];
 let drag = null;
+let previewUrl = null;
+let analysisSerial = 0;
 
-function status(msg, error=false, working=false) {
+function status(message, kind="ready") {
   const el = $("status");
-  el.textContent = msg;
-  el.className = "status " + (error ? "error" : working ? "working" : "ready");
+  el.textContent = message;
+  el.className = `status ${kind}`;
 }
+
+function setTab(panelId) {
+  document.querySelectorAll(".tab").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.tab === panelId);
+  });
+  document.querySelectorAll(".panel").forEach(panel => {
+    panel.classList.toggle("active", panel.id === panelId);
+  });
+  setTimeout(redrawAll, 40);
+}
+
 function num(id, fallback=null) {
-  const v = parseFloat($(id).value);
-  return Number.isFinite(v) ? v : fallback;
+  const value = parseFloat($(id).value);
+  return Number.isFinite(value) ? value : fallback;
 }
+
 function settingsPayload() {
   return {
     gauge_length_mm: num("gauge", 50),
@@ -25,30 +41,104 @@ function settingsPayload() {
     grammage_g_m2: num("grammage", null)
   };
 }
+
 async function api(url, options={}) {
-  status("Working — please wait…", false, true);
-  const res = await fetch(url, options);
-  let data;
-  const ct = res.headers.get("content-type") || "";
-  data = ct.includes("json") ? await res.json() : await res.text();
-  if (!res.ok) {
-    const msg = data?.detail || data || `HTTP ${res.status}`;
-    status(msg, true);
-    throw new Error(msg);
+  status("Working — please wait…", "working");
+  const response = await fetch(url, options);
+  const type = response.headers.get("content-type") || "";
+  const data = type.includes("json") ? await response.json() : await response.text();
+  if (!response.ok) {
+    const detail = data?.detail;
+    const message = typeof detail === "string" ? detail : (detail?.message || data || `HTTP ${response.status}`);
+    status(message, "error");
+    throw new Error(message);
   }
-  status("Ready.");
   return data;
 }
-function loadImage(img, url) {
-  return new Promise((resolve,reject)=>{
-    img.onload=resolve; img.onerror=reject;
-    img.src=url + (url.includes("?")?"&":"?") + "t=" + Date.now();
+
+function loadImage(image, url) {
+  return new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = reject;
+    image.src = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
   });
 }
-async function applyResponse(data) {
+
+function loadLocalPreview(file) {
+  return new Promise((resolve, reject) => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(file);
+    originalImage.onload = resolve;
+    originalImage.onerror = reject;
+    originalImage.src = previewUrl;
+  });
+}
+
+function renderValidation(validation) {
+  const box = $("layoutNotice");
+  if (!validation) {
+    box.className = "layout-notice hidden";
+    box.innerHTML = "";
+    return;
+  }
+  if (validation.compliant) {
+    box.className = "layout-notice ok";
+    box.innerHTML = "<strong>Expected result-screen layout confirmed.</strong>The Force/extension graph, Elongation field and MaxForce field were detected.";
+  } else {
+    const issues = (validation.issues || []).map(x => `<li>${escapeHtml(x)}</li>`).join("");
+    box.className = "layout-notice warning";
+    box.innerHTML = `<strong>The uploaded image does not fully match the expected completed-test layout.</strong><ul>${issues}</ul>`;
+  }
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, c => ({
+    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+  })[c]);
+}
+
+function clearAxisSuggestion() {
+  $("axisCard").classList.remove("needs-confirmation");
+  $("axisHint").classList.add("hidden");
+  $("axisHint").textContent = "";
+}
+
+function applyAxisSuggestions(suggestions) {
+  if (!suggestions || !Object.keys(suggestions).length) {
+    return false;
+  }
+  const mapping = {x_min:"xmin", x_max:"xmax", y_min:"ymin", y_max:"ymax"};
+  const labels = [];
+  let first = null;
+  Object.entries(suggestions).forEach(([key, value]) => {
+    const id = mapping[key];
+    if (!id) return;
+    $(id).value = value;
+    labels.push(`${key.replace("_", " ")} = ${value}`);
+    if (!first) first = $(id);
+  });
+  $("axisHint").textContent =
+    `The graph boundary changed substantially. Suggested ${labels.join(", ")}. Confirm these values, then click “Confirm axes and re-extract curve”.`;
+  $("axisHint").classList.remove("hidden");
+  $("axisCard").classList.add("needs-confirmation");
+  $("axisCard").scrollIntoView({behavior:"smooth", block:"center"});
+  if (first) setTimeout(() => first.focus({preventScroll:true}), 350);
+  status("Graph corners updated. Please confirm the highlighted axis calibration.", "warning");
+  return true;
+}
+
+async function applyResponse(data, options={}) {
   session = data;
-  corners = data.screen_corners.map(p => [...p]);
-  graphRect = data.result.graph_plot ? {...data.result.graph_plot} : null;
+  corners = (data.screen_corners || []).map(p => [...p]);
+  if (data.result.graph_corners) {
+    graphCorners = data.result.graph_corners.map(p => [...p]);
+  } else if (data.result.graph_plot) {
+    const r = data.result.graph_plot;
+    graphCorners = [[r.x1,r.y1],[r.x2,r.y1],[r.x2,r.y2],[r.x1,r.y2]];
+  } else {
+    graphCorners = [];
+  }
+
   $("xmin").value = data.result.x_min;
   $("xmax").value = data.result.x_max;
   $("ymin").value = data.result.y_min;
@@ -59,15 +149,38 @@ async function applyResponse(data) {
   $("grammage").value = data.settings.grammage_g_m2 ?? "";
   $("elongation").value = data.result.elongation ?? "";
   $("maxForce").value = data.result.max_force ?? "";
+
   showResults(data.result);
+  renderValidation(data.layout_validation);
+
   await Promise.all([
     loadImage(originalImage, data.images.original),
     loadImage(screenImage, data.images.annotated),
     loadImage(analysisImage, data.images.analysis_graph)
   ]);
   redrawAll();
+
+  const suggested = applyAxisSuggestions(data.axis_suggestions);
+  if (!suggested) {
+    clearAxisSuggestion();
+    if (options.initial) {
+      if (data.layout_validation?.compliant) {
+        setTab("screenPanel");
+        status("Analysis ready. Review the corrected screen and graph corners.", "ready");
+      } else {
+        setTab("originalPanel");
+        status("Image analysed, but the expected completed-test layout was not confirmed.", "warning");
+      }
+    } else {
+      status("Ready.", "ready");
+    }
+  }
 }
-function f(v,d=2) { return v==null || !Number.isFinite(Number(v)) ? "—" : Number(v).toFixed(d); }
+
+function f(value, digits=2) {
+  return value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(digits);
+}
+
 function showResults(r) {
   $("results").textContent =
 `Instrument extension: ${f(r.elongation)} mm
@@ -88,171 +201,420 @@ Tensile energy: ${f(r.toughness_n_mm,3)} N·mm (${f(r.toughness_mj,3)} mJ)
 Curve points: ${r.curve_points}
 ${r.mechanical_note ? "\nNote: " + r.mechanical_note : ""}`;
 }
-function fitCanvas(canvas, img) {
+
+function fitCanvas(canvas, image) {
+  if (!image.naturalWidth || !image.naturalHeight) return 1;
   const wrap = canvas.parentElement;
-  const scale = Math.min(wrap.clientWidth/img.naturalWidth, wrap.clientHeight/img.naturalHeight);
-  canvas.width = Math.max(1, Math.round(img.naturalWidth*scale));
-  canvas.height = Math.max(1, Math.round(img.naturalHeight*scale));
+  const scale = Math.min(
+    wrap.clientWidth / image.naturalWidth,
+    wrap.clientHeight / image.naturalHeight
+  );
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
   return scale;
 }
-function handle(ctx,x,y) {
-  ctx.beginPath(); ctx.arc(x,y,8,0,Math.PI*2);
-  ctx.fillStyle="#ffd400"; ctx.fill();
-  ctx.lineWidth=2; ctx.strokeStyle="#111"; ctx.stroke();
-}
-function drawOriginal() {
-  if (!session || !originalImage.complete) return;
-  const c=$("originalCanvas"), s=fitCanvas(c,originalImage), ctx=c.getContext("2d");
-  ctx.drawImage(originalImage,0,0,c.width,c.height);
-  ctx.strokeStyle="#ffd400"; ctx.lineWidth=3;
+
+function handle(ctx, x, y) {
   ctx.beginPath();
-  corners.forEach((p,i)=>{ const x=p[0]*s,y=p[1]*s; i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
-  ctx.closePath(); ctx.stroke();
-  corners.forEach(p=>handle(ctx,p[0]*s,p[1]*s));
-  c.dataset.scale=s;
-}
-function graphPoints() {
-  if (!graphRect) return [];
-  return [
-    [graphRect.x1,graphRect.y1],[graphRect.x2,graphRect.y1],
-    [graphRect.x2,graphRect.y2],[graphRect.x1,graphRect.y2]
-  ];
-}
-function drawScreen() {
-  if (!session || !screenImage.complete) return;
-  const c=$("screenCanvas"), s=fitCanvas(c,screenImage), ctx=c.getContext("2d");
-  ctx.drawImage(screenImage,0,0,c.width,c.height);
-  const pts=graphPoints();
-  if (pts.length) {
-    ctx.strokeStyle="#ffd400"; ctx.lineWidth=3;
-    ctx.strokeRect(graphRect.x1*s,graphRect.y1*s,(graphRect.x2-graphRect.x1)*s,(graphRect.y2-graphRect.y1)*s);
-    pts.forEach(p=>handle(ctx,p[0]*s,p[1]*s));
-  }
-  c.dataset.scale=s;
-}
-function drawAnalysis() {
-  if (!session || !analysisImage.complete) return;
-  const c=$("analysisCanvas"); fitCanvas(c,analysisImage);
-  c.getContext("2d").drawImage(analysisImage,0,0,c.width,c.height);
-}
-function redrawAll(){ drawOriginal(); drawScreen(); drawAnalysis(); }
-function nearest(points,x,y,limit=18) {
-  let best=-1,dist=Infinity;
-  points.forEach((p,i)=>{ const d=Math.hypot(p[0]-x,p[1]-y); if(d<dist){dist=d;best=i;} });
-  return dist<=limit?best:-1;
+  ctx.arc(x, y, 8, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffd400";
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#111";
+  ctx.stroke();
 }
 
-function drawMagnifier(containerId, img, sourceX, sourceY) {
-  const box=$(containerId), c=box.querySelector("canvas"), ctx=c.getContext("2d");
-  const cropW=90, cropH=66;
-  const sx=Math.max(0, Math.min(img.naturalWidth-cropW, sourceX-cropW/2));
-  const sy=Math.max(0, Math.min(img.naturalHeight-cropH, sourceY-cropH/2));
-  ctx.clearRect(0,0,c.width,c.height);
-  ctx.imageSmoothingEnabled=false;
-  ctx.drawImage(img,sx,sy,cropW,cropH,0,0,c.width,c.height);
-  ctx.strokeStyle="#ffd400"; ctx.lineWidth=2;
-  ctx.beginPath(); ctx.moveTo(c.width/2,0); ctx.lineTo(c.width/2,c.height);
-  ctx.moveTo(0,c.height/2); ctx.lineTo(c.width,c.height/2); ctx.stroke();
+function drawOriginal() {
+  if (!originalImage.naturalWidth) return;
+  const canvas = $("originalCanvas");
+  const scale = fitCanvas(canvas, originalImage);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(originalImage, 0, 0, canvas.width, canvas.height);
+
+  if (corners.length === 4) {
+    ctx.strokeStyle = "#ffd400";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    corners.forEach((point, i) => {
+      const x = point[0] * scale;
+      const y = point[1] * scale;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+    corners.forEach(point => handle(ctx, point[0] * scale, point[1] * scale));
+  }
+  canvas.dataset.scale = scale;
+}
+
+function drawScreen() {
+  if (!screenImage.naturalWidth) return;
+  const canvas = $("screenCanvas");
+  const scale = fitCanvas(canvas, screenImage);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(screenImage, 0, 0, canvas.width, canvas.height);
+
+  if (graphCorners.length === 4) {
+    ctx.strokeStyle = "#ffd400";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    graphCorners.forEach((point, i) => {
+      const x = point[0] * scale;
+      const y = point[1] * scale;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+    graphCorners.forEach(point => handle(ctx, point[0] * scale, point[1] * scale));
+  }
+  canvas.dataset.scale = scale;
+}
+
+function drawAnalysis() {
+  if (!analysisImage.naturalWidth) return;
+  const canvas = $("analysisCanvas");
+  fitCanvas(canvas, analysisImage);
+  canvas.getContext("2d").drawImage(analysisImage, 0, 0, canvas.width, canvas.height);
+}
+
+function redrawAll() {
+  drawOriginal();
+  drawScreen();
+  drawAnalysis();
+}
+
+function nearest(points, x, y, limit=18) {
+  let best = -1;
+  let distance = Infinity;
+  points.forEach((point, i) => {
+    const d = Math.hypot(point[0] - x, point[1] - y);
+    if (d < distance) {
+      distance = d;
+      best = i;
+    }
+  });
+  return distance <= limit ? best : -1;
+}
+
+function drawMagnifier(containerId, image, sourceX, sourceY) {
+  const box = $(containerId);
+  const canvas = box.querySelector("canvas");
+  const ctx = canvas.getContext("2d");
+  const cropW = 90;
+  const cropH = 66;
+  const sx = Math.max(0, Math.min(image.naturalWidth - cropW, sourceX - cropW / 2));
+  const sy = Math.max(0, Math.min(image.naturalHeight - cropH, sourceY - cropH / 2));
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(image, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "#ffd400";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(canvas.width / 2, 0);
+  ctx.lineTo(canvas.width / 2, canvas.height);
+  ctx.moveTo(0, canvas.height / 2);
+  ctx.lineTo(canvas.width, canvas.height / 2);
+  ctx.stroke();
   box.classList.add("visible");
 }
-function hideMagnifier(id){ $(id).classList.remove("visible"); }
-$("originalCanvas").addEventListener("pointerdown",e=>{
-  const c=e.currentTarget,s=Number(c.dataset.scale),r=c.getBoundingClientRect();
-  const idx=nearest(corners.map(p=>[p[0]*s,p[1]*s]),e.clientX-r.left,e.clientY-r.top);
-  if(idx>=0){drag={type:"corner",idx};c.setPointerCapture(e.pointerId);}
-});
-$("originalCanvas").addEventListener("pointermove",e=>{
-  if(!drag||drag.type!=="corner")return;
-  const c=e.currentTarget,s=Number(c.dataset.scale),r=c.getBoundingClientRect();
-  const ix=(e.clientX-r.left)/s, iy=(e.clientY-r.top)/s;
-  corners[drag.idx]=[ix,iy]; drawOriginal(); drawMagnifier("originalMagnifier",originalImage,ix,iy);
-});
-$("originalCanvas").addEventListener("pointerup",()=>{drag=null;hideMagnifier("originalMagnifier");});
-$("originalCanvas").addEventListener("pointerleave",()=>{if(!drag)hideMagnifier("originalMagnifier");});
 
-$("screenCanvas").addEventListener("pointerdown",e=>{
-  const c=e.currentTarget,s=Number(c.dataset.scale),r=c.getBoundingClientRect();
-  const idx=nearest(graphPoints().map(p=>[p[0]*s,p[1]*s]),e.clientX-r.left,e.clientY-r.top);
-  if(idx>=0){drag={type:"graph",idx};c.setPointerCapture(e.pointerId);}
-});
-$("screenCanvas").addEventListener("pointermove",e=>{
-  if(!drag||drag.type!=="graph"||!graphRect)return;
-  const c=e.currentTarget,s=Number(c.dataset.scale),r=c.getBoundingClientRect();
-  const x=(e.clientX-r.left)/s,y=(e.clientY-r.top)/s;
-  if(drag.idx===0){graphRect.x1=x;graphRect.y1=y;}
-  if(drag.idx===1){graphRect.x2=x;graphRect.y1=y;}
-  if(drag.idx===2){graphRect.x2=x;graphRect.y2=y;}
-  if(drag.idx===3){graphRect.x1=x;graphRect.y2=y;}
-  if(graphRect.x1>graphRect.x2)[graphRect.x1,graphRect.x2]=[graphRect.x2,graphRect.x1];
-  if(graphRect.y1>graphRect.y2)[graphRect.y1,graphRect.y2]=[graphRect.y2,graphRect.y1];
-  drawScreen(); drawMagnifier("screenMagnifier",screenImage,x,y);
-});
-$("screenCanvas").addEventListener("pointerup",()=>{drag=null;hideMagnifier("screenMagnifier");});
-$("screenCanvas").addEventListener("pointerleave",()=>{if(!drag)hideMagnifier("screenMagnifier");});
-
-$("analyzeBtn").onclick=async()=>{
-  const file=$("imageFile").files[0];
-  if(!file){status("Choose an image first.",true);return;}
-  const form=new FormData(); form.append("image",file);
-  Object.entries(settingsPayload()).forEach(([k,v])=>{if(v!==null)form.append(k,v);});
-  try{await applyResponse(await api("/api/analyze",{method:"POST",body:form}));}
-  catch(e){console.error(e);}
-};
-async function update(extra={}) {
-  if(!session){status("Analyse an image first.",true);return;}
-  const payload={...settingsPayload(),
-    x_min:num("xmin",0),x_max:num("xmax",5),y_min:num("ymin",0),y_max:num("ymax",120),...extra};
-  try{await applyResponse(await api(`/api/session/${session.session_id}/update`,{
-    method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}));}
-  catch(e){console.error(e);}
+function hideMagnifier(id) {
+  $(id).classList.remove("visible");
 }
-$("applyCornersBtn").onclick=()=>update({screen_corners:corners});
-$("applyGraphBtn").onclick=()=>update({graph_plot:graphRect,reextract:true});
-$("autoGraphBtn").onclick=()=>update({auto_graph:true,reextract:true});
-$("reextractBtn").onclick=()=>update({reextract:true});
-$("updateCalcBtn").onclick=()=>update({});
-$("editedBtn").onclick=()=>update({elongation:num("elongation",null),max_force:num("maxForce",null)});
-$("trainBtn").onclick=async()=>{
-  if(!session)return;
-  if(!confirm("Teach the shared recognizer from these corrected values?"))return;
-  try{
-    const data=await api(`/api/session/${session.session_id}/train`,{
-      method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({elongation:$("elongation").value,max_force:$("maxForce").value})
+
+function barycentric(point, a, b, c) {
+  const v0 = [b[0]-a[0], b[1]-a[1]];
+  const v1 = [c[0]-a[0], c[1]-a[1]];
+  const v2 = [point[0]-a[0], point[1]-a[1]];
+  const d00 = v0[0]*v0[0] + v0[1]*v0[1];
+  const d01 = v0[0]*v1[0] + v0[1]*v1[1];
+  const d11 = v1[0]*v1[0] + v1[1]*v1[1];
+  const d20 = v2[0]*v0[0] + v2[1]*v0[1];
+  const d21 = v2[0]*v1[0] + v2[1]*v1[1];
+  const den = d00*d11 - d01*d01;
+  if (Math.abs(den) < 1e-9) return null;
+  const v = (d11*d20 - d01*d21) / den;
+  const w = (d00*d21 - d01*d20) / den;
+  const u = 1 - v - w;
+  if (u < -0.002 || v < -0.002 || w < -0.002) return null;
+  return [u,v,w];
+}
+
+function graphUv(point) {
+  if (graphCorners.length !== 4) return null;
+  const [tl,tr,br,bl] = graphCorners;
+  let bc = barycentric(point, tl, tr, br);
+  if (bc) {
+    const [a,b,c] = bc;
+    return [b + c, c];
+  }
+  bc = barycentric(point, tl, br, bl);
+  if (bc) {
+    const [a,b,c] = bc;
+    return [b, b + c];
+  }
+  return null;
+}
+
+function showGraphReadout(event) {
+  if (!session || graphCorners.length !== 4) return;
+  const canvas = $("screenCanvas");
+  const scale = Number(canvas.dataset.scale || 1);
+  const rect = canvas.getBoundingClientRect();
+  const displayX = event.clientX - rect.left;
+  const displayY = event.clientY - rect.top;
+  const source = [displayX / scale, displayY / scale];
+  const uv = graphUv(source);
+  const box = $("graphReadout");
+  if (!uv) {
+    box.classList.add("hidden");
+    return;
+  }
+  const xMin = num("xmin", 0), xMax = num("xmax", 5);
+  const yMin = num("ymin", 0), yMax = num("ymax", 120);
+  const extension = xMin + uv[0] * (xMax - xMin);
+  const force = yMax - uv[1] * (yMax - yMin);
+  box.textContent = `Extension ${extension.toFixed(3)} mm   Force ${force.toFixed(2)} N`;
+  const wrapRect = canvas.parentElement.getBoundingClientRect();
+  box.style.left = `${Math.min(wrapRect.width - 235, Math.max(8, event.clientX - wrapRect.left + 14))}px`;
+  box.style.top = `${Math.min(wrapRect.height - 40, Math.max(8, event.clientY - wrapRect.top + 14))}px`;
+  box.classList.remove("hidden");
+}
+
+$("originalCanvas").addEventListener("pointerdown", event => {
+  if (corners.length !== 4) return;
+  const canvas = event.currentTarget;
+  const scale = Number(canvas.dataset.scale);
+  const rect = canvas.getBoundingClientRect();
+  const index = nearest(
+    corners.map(p => [p[0]*scale, p[1]*scale]),
+    event.clientX - rect.left,
+    event.clientY - rect.top
+  );
+  if (index >= 0) {
+    drag = {type:"screen", index};
+    canvas.setPointerCapture(event.pointerId);
+  }
+});
+
+$("originalCanvas").addEventListener("pointermove", event => {
+  if (!drag || drag.type !== "screen") return;
+  const canvas = event.currentTarget;
+  const scale = Number(canvas.dataset.scale);
+  const rect = canvas.getBoundingClientRect();
+  const x = (event.clientX - rect.left) / scale;
+  const y = (event.clientY - rect.top) / scale;
+  corners[drag.index] = [x,y];
+  drawOriginal();
+  drawMagnifier("originalMagnifier", originalImage, x, y);
+});
+
+$("originalCanvas").addEventListener("pointerup", () => {
+  drag = null;
+  hideMagnifier("originalMagnifier");
+});
+$("originalCanvas").addEventListener("pointerleave", () => {
+  if (!drag) hideMagnifier("originalMagnifier");
+});
+
+$("screenCanvas").addEventListener("pointerdown", event => {
+  if (graphCorners.length !== 4) return;
+  const canvas = event.currentTarget;
+  const scale = Number(canvas.dataset.scale);
+  const rect = canvas.getBoundingClientRect();
+  const index = nearest(
+    graphCorners.map(p => [p[0]*scale, p[1]*scale]),
+    event.clientX - rect.left,
+    event.clientY - rect.top
+  );
+  if (index >= 0) {
+    drag = {type:"graph", index};
+    canvas.setPointerCapture(event.pointerId);
+    $("graphReadout").classList.add("hidden");
+  }
+});
+
+$("screenCanvas").addEventListener("pointermove", event => {
+  if (drag && drag.type === "graph") {
+    const canvas = event.currentTarget;
+    const scale = Number(canvas.dataset.scale);
+    const rect = canvas.getBoundingClientRect();
+    const x = (event.clientX - rect.left) / scale;
+    const y = (event.clientY - rect.top) / scale;
+    graphCorners[drag.index] = [x,y];
+    drawScreen();
+    drawMagnifier("screenMagnifier", screenImage, x, y);
+  } else {
+    showGraphReadout(event);
+  }
+});
+
+$("screenCanvas").addEventListener("pointerup", () => {
+  drag = null;
+  hideMagnifier("screenMagnifier");
+});
+$("screenCanvas").addEventListener("pointerleave", () => {
+  if (!drag) hideMagnifier("screenMagnifier");
+  $("graphReadout").classList.add("hidden");
+});
+
+async function runAnalysis(file) {
+  if (!file) {
+    status("Choose an image first.", "error");
+    return;
+  }
+  const serial = ++analysisSerial;
+  const form = new FormData();
+  form.append("image", file);
+  Object.entries(settingsPayload()).forEach(([key,value]) => {
+    if (value !== null) form.append(key, value);
+  });
+  try {
+    const data = await api("/api/analyze", {method:"POST", body:form});
+    if (serial !== analysisSerial) return;
+    await applyResponse(data, {initial:true});
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+$("imageFile").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  selectedFile = file;
+  $("analyzeBtn").disabled = false;
+  session = null;
+  corners = [];
+  graphCorners = [];
+  renderValidation(null);
+  clearAxisSuggestion();
+  $("results").textContent = "Analysis in progress…";
+  setTab("originalPanel");
+  try {
+    await loadLocalPreview(file);
+    drawOriginal();
+    status("Image loaded. Uploading and analysing automatically…", "working");
+    runAnalysis(file);
+  } catch (error) {
+    status("The selected image could not be displayed.", "error");
+  }
+});
+
+$("analyzeBtn").addEventListener("click", () => runAnalysis(selectedFile));
+
+async function update(extra={}) {
+  if (!session) {
+    status("Analyse an image first.", "error");
+    return;
+  }
+  const payload = {
+    ...settingsPayload(),
+    x_min:num("xmin",0), x_max:num("xmax",5),
+    y_min:num("ymin",0), y_max:num("ymax",120),
+    ...extra
+  };
+  try {
+    const data = await api(`/api/session/${session.session_id}/update`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload)
     });
-    status(`Recognizer updated. Added: ${JSON.stringify(data.added)}`);
-  }catch(e){console.error(e);}
+    await applyResponse(data);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+$("applyCornersBtn").onclick = () => update({screen_corners:corners});
+$("applyGraphBtn").onclick = () => update({graph_corners:graphCorners, reextract:true});
+$("autoGraphBtn").onclick = () => update({auto_graph:true, reextract:true});
+$("reextractBtn").onclick = async () => {
+  clearAxisSuggestion();
+  await update({reextract:true});
 };
-$("fitBtn").onclick=redrawAll;
-window.addEventListener("resize",()=>setTimeout(redrawAll,100));
-document.querySelectorAll(".tab").forEach(btn=>btn.onclick=()=>{
-  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
-  document.querySelectorAll(".panel").forEach(x=>x.classList.remove("active"));
-  btn.classList.add("active"); $(btn.dataset.tab).classList.add("active");
-  setTimeout(redrawAll,50);
+$("updateCalcBtn").onclick = () => update({});
+$("editedBtn").onclick = () => update({
+  elongation:num("elongation",null),
+  max_force:num("maxForce",null)
 });
-document.querySelectorAll("[data-export]").forEach(btn=>btn.onclick=()=>{
-  if(!session){status("Analyse an image first.",true);return;}
-  window.location=`/api/session/${session.session_id}/export/${btn.dataset.export}`;
+
+["xmin","xmax","ymin","ymax"].forEach(id => {
+  $(id).addEventListener("input", clearAxisSuggestion);
 });
-$("saveSettingsBtn").onclick=()=>{
-  if(!session){status("Analyse an image first.",true);return;}
-  window.location=`/api/session/${session.session_id}/settings`;
+
+$("trainBtn").onclick = async () => {
+  if (!session) return;
+  if (!confirm("Teach the shared recognizer from these corrected values?")) return;
+  try {
+    const data = await api(`/api/session/${session.session_id}/train`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        elongation:$("elongation").value,
+        max_force:$("maxForce").value
+      })
+    });
+    status(`Recognizer updated. Added ${JSON.stringify(data.added)}.`, "ready");
+  } catch (error) {
+    console.error(error);
+  }
 };
-$("settingsFile").addEventListener("change",async e=>{
-  const file=e.target.files[0]; if(!file)return;
-  try{
-    const cfg=JSON.parse(await file.text());
-    const s=cfg.sample||cfg;
-    if(s.gauge_length_mm!=null)$("gauge").value=s.gauge_length_mm;
-    if(s.sample_width_mm!=null)$("width").value=s.sample_width_mm;
-    if(s.thickness_um!=null)$("thickness").value=s.thickness_um;
-    if(s.grammage_g_m2!=null)$("grammage").value=s.grammage_g_m2;
-    if(session && cfg.graph_plot_norm){
-      const n=cfg.graph_plot_norm,w=session.rectified_size.width,h=session.rectified_size.height;
-      graphRect={x1:n[0]*w,y1:n[1]*h,x2:n[2]*w,y2:n[3]*h};
-      await update({graph_plot:graphRect,reextract:true});
-    } else if(session) await update({});
-    status("Settings loaded.");
-  }catch(err){status("Could not load settings: "+err.message,true);}
+
+$("fitBtn").onclick = redrawAll;
+window.addEventListener("resize", () => setTimeout(redrawAll, 100));
+
+document.querySelectorAll(".tab").forEach(button => {
+  button.onclick = () => setTab(button.dataset.tab);
+});
+
+document.querySelectorAll("[data-export]").forEach(button => {
+  button.onclick = () => {
+    if (!session) {
+      status("Analyse an image first.", "error");
+      return;
+    }
+    window.location = `/api/session/${session.session_id}/export/${button.dataset.export}`;
+  };
+});
+
+$("saveSettingsBtn").onclick = () => {
+  if (!session) {
+    status("Analyse an image first.", "error");
+    return;
+  }
+  window.location = `/api/session/${session.session_id}/settings`;
+};
+
+$("settingsFile").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    const cfg = JSON.parse(await file.text());
+    const settings = cfg.sample || cfg;
+    if (settings.gauge_length_mm != null) $("gauge").value = settings.gauge_length_mm;
+    if (settings.sample_width_mm != null) $("width").value = settings.sample_width_mm;
+    if (settings.thickness_um != null) $("thickness").value = settings.thickness_um;
+    if (settings.grammage_g_m2 != null) $("grammage").value = settings.grammage_g_m2;
+
+    if (session && cfg.graph_corners_norm) {
+      const w = session.rectified_size.width;
+      const h = session.rectified_size.height;
+      graphCorners = cfg.graph_corners_norm.map(p => [p[0]*w, p[1]*h]);
+      await update({graph_corners:graphCorners, reextract:true});
+    } else if (session && cfg.graph_plot_norm) {
+      const n = cfg.graph_plot_norm;
+      const w = session.rectified_size.width;
+      const h = session.rectified_size.height;
+      graphCorners = [
+        [n[0]*w,n[1]*h],[n[2]*w,n[1]*h],
+        [n[2]*w,n[3]*h],[n[0]*w,n[3]*h]
+      ];
+      await update({graph_corners:graphCorners, reextract:true});
+    } else if (session) {
+      await update({});
+    }
+    status("Settings loaded.", "ready");
+  } catch (error) {
+    status("Could not load settings: " + error.message, "error");
+  }
 });

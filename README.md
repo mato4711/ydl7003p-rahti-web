@@ -52,3 +52,17 @@ after session expiry or pod replacement. Do not enable request-body logging.
 - Added live magnifiers and crosshairs while screen and graph handles are dragged.
 - Made Working/Ready/Error state prominent.
 - Reorganized results and exports beside the input settings and reduced image-view height.
+
+
+## Version 3 interaction changes
+
+- Choosing an image displays it immediately in the Original / screen corners tab.
+- Analysis starts automatically; a compliant result screen opens in the Corrected screen tab when ready.
+- Uploaded images are checked for the expected completed-test layout:
+  - dark Force-versus-extension graph in the lower-left area,
+  - green Elongation value in the second top result box,
+  - purple MaxForce value in the right result box.
+- The four graph corners are independent and the server perspective-corrects the graph quadrilateral before curve extraction.
+- A substantial graph-boundary change produces a suggested axis min/max value and highlights Axis calibration for confirmation.
+- Hovering over the corrected graph shows extension (mm) and force (N) at the cursor.
+- Magnifiers remain available when dragging screen and graph corners.

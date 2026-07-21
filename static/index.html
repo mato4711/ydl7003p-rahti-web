@@ -9,18 +9,20 @@
 <body>
 <header>
   <h1>YDL-7003-P data analyzer</h1>
-  <p>Upload a photograph of the tester screen. Processing is performed on the Rahti server.</p>
+  <p>Choose a tester-screen photograph. The image is shown immediately and analysed on the Rahti server.</p>
 </header>
 
 <main>
   <section class="toolbar card">
-    <label class="file-button">Choose tester photograph
+    <label class="file-button primary-file">Choose tester photograph
       <input id="imageFile" type="file" accept="image/*">
     </label>
-    <button id="analyzeBtn" class="primary">Analyse</button>
+    <button id="analyzeBtn" class="primary" disabled>Re-analyse chosen image</button>
     <button id="fitBtn">Fit views</button>
     <span id="status" class="status ready" role="status" aria-live="polite">Ready — choose an image to begin.</span>
   </section>
+
+  <section id="layoutNotice" class="layout-notice hidden" role="alert"></section>
 
   <section class="workspace">
     <div class="views card">
@@ -31,16 +33,23 @@
       </div>
 
       <div id="originalPanel" class="panel active">
-        <p>Drag the yellow handles to the four display corners, then click <b>Apply screen corners</b>.</p>
-        <div class="canvas-wrap"><canvas id="originalCanvas"></canvas><div id="originalMagnifier" class="magnifier"><canvas width="220" height="160"></canvas></div></div>
+        <p>The chosen photograph appears here immediately. Drag the yellow handles to the display corners when correction is needed.</p>
+        <div class="canvas-wrap">
+          <canvas id="originalCanvas"></canvas>
+          <div id="originalMagnifier" class="magnifier"><canvas width="220" height="160"></canvas></div>
+        </div>
         <button id="applyCornersBtn">Apply screen corners and re-analyse</button>
       </div>
 
       <div id="screenPanel" class="panel">
-        <p>Drag the yellow handles to the plotting-grid corners. The rectangle remains axis-aligned.</p>
-        <div class="canvas-wrap"><canvas id="screenCanvas"></canvas><div id="screenMagnifier" class="magnifier"><canvas width="220" height="160"></canvas></div></div>
+        <p>Each yellow graph corner can be moved independently to correct residual graph distortion. Hover inside the graph to see extension and force.</p>
+        <div class="canvas-wrap">
+          <canvas id="screenCanvas"></canvas>
+          <div id="screenMagnifier" class="magnifier"><canvas width="220" height="160"></canvas></div>
+          <div id="graphReadout" class="graph-readout hidden"></div>
+        </div>
         <div class="button-row">
-          <button id="applyGraphBtn">Apply graph area and re-extract</button>
+          <button id="applyGraphBtn">Apply graph corners and re-extract</button>
           <button id="autoGraphBtn">Auto-detect graph again</button>
         </div>
       </div>
@@ -51,15 +60,16 @@
     </div>
 
     <aside class="settings">
-      <section class="card">
+      <section id="axisCard" class="card">
         <h2>Axis calibration</h2>
+        <p id="axisHint" class="axis-hint hidden"></p>
         <div class="grid4">
           <label>X min<input id="xmin" type="number" step="any" value="0"></label>
           <label>X max<input id="xmax" type="number" step="any" value="5"></label>
           <label>Y min<input id="ymin" type="number" step="any" value="0"></label>
           <label>Y max<input id="ymax" type="number" step="any" value="120"></label>
         </div>
-        <button id="reextractBtn">Re-extract curve</button>
+        <button id="reextractBtn">Confirm axes and re-extract curve</button>
       </section>
 
       <section class="card">

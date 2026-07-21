@@ -278,6 +278,7 @@ class AnalysisResult:
     elong_box: Optional[Rect] = None
     maxforce_box: Optional[Rect] = None
     graph_plot: Optional[Rect] = None
+    graph_corners: Optional[np.ndarray] = None
     elongation: Optional[float] = None
     max_force: Optional[float] = None
     elongation_source: str = ""
@@ -1409,6 +1410,108 @@ def find_graph_plot(rectified_bgr: np.ndarray) -> Rect:
     return refine_plot_to_grid_axes(rectified_bgr, r)
 
 
+
+def graph_corners_from_rect(rect: Rect) -> np.ndarray:
+    """Return graph corners as TL, TR, BR, BL floating-point points."""
+    return rect_to_corners(rect).astype(np.float32)
+
+
+def graph_corners_to_rect(corners: np.ndarray, width: int, height: int) -> Rect:
+    """Return the bounding rectangle of a graph quadrilateral."""
+    q = order_quad(np.asarray(corners, dtype=np.float32).reshape(4, 2))
+    x1 = int(np.floor(np.min(q[:, 0])))
+    y1 = int(np.floor(np.min(q[:, 1])))
+    x2 = int(np.ceil(np.max(q[:, 0]))) + 1
+    y2 = int(np.ceil(np.max(q[:, 1]))) + 1
+    return Rect(x1, y1, x2, y2).clip(width, height)
+
+
+def warp_graph_quad(rectified_bgr: np.ndarray, corners: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Perspective-correct an individually adjustable graph quadrilateral."""
+    q = order_quad(np.asarray(corners, dtype=np.float32).reshape(4, 2))
+    top = float(np.linalg.norm(q[1] - q[0]))
+    bottom = float(np.linalg.norm(q[2] - q[3]))
+    left = float(np.linalg.norm(q[3] - q[0]))
+    right = float(np.linalg.norm(q[2] - q[1]))
+    out_w = max(120, int(round(max(top, bottom))))
+    out_h = max(100, int(round(max(left, right))))
+    dst = np.array(
+        [[0, 0], [out_w - 1, 0], [out_w - 1, out_h - 1], [0, out_h - 1]],
+        dtype=np.float32,
+    )
+    to_warp = cv2.getPerspectiveTransform(q, dst)
+    to_screen = cv2.getPerspectiveTransform(dst, q)
+    warped = cv2.warpPerspective(
+        rectified_bgr,
+        to_warp,
+        (out_w, out_h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+    return warped, to_screen
+
+
+def extract_green_curve_quad(rectified_bgr: np.ndarray, corners: np.ndarray,
+                             x_min: float, x_max: float,
+                             y_min: float, y_max: float) -> np.ndarray:
+    """Digitize the curve from a four-corner graph area."""
+    warped, _ = warp_graph_quad(rectified_bgr, corners)
+    h, w = warped.shape[:2]
+    return extract_green_curve(warped, Rect(0, 0, w, h), x_min, x_max, y_min, y_max)
+
+
+def validate_expected_layout(rectified_bgr: np.ndarray,
+                             screen_detection_ok: bool = True) -> dict:
+    """Check that an uploaded image resembles the Force/Elong. result screen."""
+    h, w = rectified_bgr.shape[:2]
+    issues: list[str] = []
+    checks: dict[str, dict] = {}
+
+    gr = fixed_rect(w, h, (0.050, 0.350, 0.720, 0.950))
+    graph = rectified_bgr[gr.as_slice()]
+    gray = cv2.cvtColor(graph, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(graph, cv2.COLOR_BGR2HSV)
+    dark_fraction = float(np.mean(gray < 100))
+    green = cv2.inRange(hsv, np.array([35, 75, 55]), np.array([95, 255, 255]))
+    green_fraction = float(np.mean(green > 0))
+    graph_ok = dark_fraction >= 0.28
+    curve_ok = green_fraction >= 0.00045
+    checks["graph_area"] = {"ok": bool(graph_ok), "dark_fraction": round(dark_fraction, 4)}
+    checks["green_curve"] = {"ok": bool(curve_ok), "green_fraction": round(green_fraction, 6)}
+    if not graph_ok:
+        issues.append(
+            "The expected dark Force-versus-extension graph is not visible in the lower-left area. "
+            "The photograph may show a settings or method screen instead of a completed test result."
+        )
+    elif not curve_ok:
+        issues.append("The graph area is present, but a green force/extension curve was not detected.")
+
+    elong_roi, max_roi = result_number_rois(rectified_bgr)
+    elong_masks = template_candidate_masks(rectified_bgr[elong_roi.as_slice()], "green")
+    max_masks = template_candidate_masks(rectified_bgr[max_roi.as_slice()], "purple")
+    elong_pixels = max((cv2.countNonZero(m) for m in elong_masks), default=0)
+    max_pixels = max((cv2.countNonZero(m) for m in max_masks), default=0)
+    elong_ok = elong_pixels >= max(80, int(elong_roi.width * elong_roi.height * 0.006))
+    max_ok = max_pixels >= max(80, int(max_roi.width * max_roi.height * 0.004))
+    checks["elongation_field"] = {"ok": bool(elong_ok), "colored_pixels": int(elong_pixels)}
+    checks["maxforce_field"] = {"ok": bool(max_ok), "colored_pixels": int(max_pixels)}
+    if not elong_ok:
+        issues.append("The green Elongation value was not found in the second result box from the left.")
+    if not max_ok:
+        issues.append("The purple MaxForce value was not found in the result box on the right.")
+    if not screen_detection_ok:
+        issues.insert(0, "The tester display could not be detected reliably. Adjust the four screen corners manually.")
+
+    required = [screen_detection_ok, graph_ok, curve_ok, elong_ok, max_ok]
+    score = float(sum(bool(v) for v in required) / len(required))
+    return {
+        "compliant": bool(all(required)),
+        "score": round(score, 2),
+        "issues": issues,
+        "checks": checks,
+    }
+
+
 def tesseract_tokens(image_bgr: np.ndarray, psm: int = 6):
     if pytesseract is None:
         return []
@@ -1469,7 +1572,15 @@ def estimate_axis_limits(rectified_bgr: np.ndarray, plot: Rect) -> tuple[float,f
     # Y labels: strip left of plot.
     yb = Rect(max(0, plot.x1-int(.075*w)), plot.y1, plot.x1, plot.y2).clip(w,h)
     yt = tesseract_tokens(rectified_bgr[yb.as_slice()], psm=6)
-    yvals = [(yb.y1+y, val) for _, y, val, conf, _ in yt if conf >= 0 and 0 <= val <= 10000]
+    # Y-axis labels on this instrument are zero or multiples of 10. Reject
+    # isolated low OCR artefacts such as "4", which otherwise can turn a
+    # 0..120 N axis into an implausible 0..12 N axis.
+    yvals = [
+        (yb.y1+y, val)
+        for _, y, val, conf, _ in yt
+        if conf >= 0 and 0 <= val <= 10000
+        and (abs(val) < 1e-9 or (val >= 10 and abs(val/10.0 - round(val/10.0)) <= 0.16))
+    ]
     if len(yvals) >= 2:
         py = np.array([p for p,v in yvals], float)
         vv = np.array([v for p,v in yvals], float)
@@ -1840,6 +1951,7 @@ def analyze_rectified(rectified_bgr: np.ndarray) -> AnalysisResult:
         elong_box=elong_box,
         maxforce_box=max_box,
         graph_plot=graph,
+        graph_corners=graph_corners_from_rect(graph),
         elongation=elong,
         max_force=maxforce,
         elongation_source=elong_note,
@@ -1855,16 +1967,27 @@ def graph_data_to_pixel(result: AnalysisResult, xval: float, yval: float) -> Opt
         return None
     if not (result.x_max > result.x_min and result.y_max > result.y_min):
         return None
-    r = result.graph_plot
-    px = r.x1 + (float(xval) - result.x_min) / (result.x_max - result.x_min) * max(r.width - 1, 1)
-    py = r.y2 - (float(yval) - result.y_min) / (result.y_max - result.y_min) * max(r.height - 1, 1)
-    return int(round(px)), int(round(py))
 
+    u = (float(xval) - result.x_min) / (result.x_max - result.x_min)
+    v = (result.y_max - float(yval)) / (result.y_max - result.y_min)
+    if result.graph_corners is not None:
+        q = order_quad(np.asarray(result.graph_corners, dtype=np.float32).reshape(4, 2))
+        src = np.array([[[u, v]]], dtype=np.float32)
+        unit = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+        matrix = cv2.getPerspectiveTransform(unit, q)
+        mapped = cv2.perspectiveTransform(src, matrix)[0, 0]
+        return int(round(float(mapped[0]))), int(round(float(mapped[1])))
+
+    r = result.graph_plot
+    px = r.x1 + u * max(r.width - 1, 1)
+    py = r.y1 + v * max(r.height - 1, 1)
+    return int(round(px)), int(round(py))
 
 def draw_curve_overlay(out: np.ndarray, result: AnalysisResult) -> None:
     if result.graph_plot is None:
         return
     r = result.graph_plot
+    q = order_quad(result.graph_corners) if result.graph_corners is not None else graph_corners_from_rect(r)
     thickness = max(2, int(round(out.shape[1] / 1200)))
     if result.curve_xy is not None and len(result.curve_xy) >= 2 and result.x_max > result.x_min and result.y_max > result.y_min:
         pts = []
@@ -1894,12 +2017,12 @@ def draw_curve_overlay(out: np.ndarray, result: AnalysisResult) -> None:
                         cv2.FONT_HERSHEY_SIMPLEX, max(.45, out.shape[1]/2600),
                         (255, 255, 0), max(1, thickness), cv2.LINE_AA)
     if result.break_line_x is not None and result.x_min <= result.break_line_x <= result.x_max:
-        px = graph_data_to_pixel(result, result.break_line_x, result.y_min)
-        if px:
-            xpix = px[0]
-            cv2.line(out, (xpix, r.y1), (xpix, r.y2), (0, 0, 0), thickness + 3, cv2.LINE_AA)
-            cv2.line(out, (xpix, r.y1), (xpix, r.y2), (0, 255, 255), thickness, cv2.LINE_AA)
-            cv2.putText(out, f"Break {result.break_line_x:.2f} mm", (xpix + 8, r.y1 + 28),
+        p_bottom = graph_data_to_pixel(result, result.break_line_x, result.y_min)
+        p_top = graph_data_to_pixel(result, result.break_line_x, result.y_max)
+        if p_bottom and p_top:
+            cv2.line(out, p_bottom, p_top, (0, 0, 0), thickness + 3, cv2.LINE_AA)
+            cv2.line(out, p_bottom, p_top, (0, 255, 255), thickness, cv2.LINE_AA)
+            cv2.putText(out, f"Break {result.break_line_x:.2f} mm", (p_top[0] + 8, max(24, p_top[1] + 28)),
                         cv2.FONT_HERSHEY_SIMPLEX, max(.45, out.shape[1]/2600),
                         (0, 255, 255), max(1, thickness), cv2.LINE_AA)
 
@@ -2365,8 +2488,18 @@ def draw_annotations(image_bgr: np.ndarray, result: AnalysisResult) -> np.ndarra
     fv = "Instrument maximum force" if result.max_force is None else f"Instrument max force: {result.max_force:.2f} N"
     box(result.elong_box, (0,255,255), ev)
     box(result.maxforce_box, (255,0,255), fv)
-    box(result.graph_plot, (0,165,255),
-        f"Graph x={result.x_min:g}..{result.x_max:g} mm, y={result.y_min:g}..{result.y_max:g} N")
+    graph_label = f"Graph x={result.x_min:g}..{result.x_max:g} mm, y={result.y_min:g}..{result.y_max:g} N"
+    if result.graph_corners is not None:
+        q = order_quad(np.asarray(result.graph_corners, dtype=np.float32).reshape(4, 2))
+        pts = np.round(q).astype(np.int32).reshape(-1, 1, 2)
+        thickness = max(2, int(round(out.shape[1]/900)))
+        cv2.polylines(out, [pts], True, (0,165,255), thickness, cv2.LINE_AA)
+        x0, y0 = int(q[0, 0]), int(q[0, 1])
+        cv2.putText(out, graph_label, (x0, max(20, y0-8)),
+                    cv2.FONT_HERSHEY_SIMPLEX, max(.6, out.shape[1]/1900),
+                    (0,165,255), thickness, cv2.LINE_AA)
+    else:
+        box(result.graph_plot, (0,165,255), graph_label)
     draw_curve_overlay(out, result)
     return out
 
