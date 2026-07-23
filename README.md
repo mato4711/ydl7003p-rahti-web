@@ -94,3 +94,15 @@ after session expiry or pod replacement. Do not enable request-body logging.
 - The wait cursor and input blocking are controlled directly by the Working
   status. Every `Working — please wait…` state now activates them immediately.
 - Static CSS and JavaScript URLs use version 7 to prevent stale browser caching.
+
+
+## Version 8 changes
+
+- Thickness and grammage are optional.
+- Clearing either field now persists after recalculation, re-analysis and
+  settings reload.
+- Tensile stiffness remains calculable from slope, gauge length and width.
+- Stiffness index is omitted when grammage is unavailable.
+- Tensile modulus is omitted when thickness is unavailable.
+- Web results, the analysis graph and Excel notes explain omitted values.
+- If an optional field is not empty, it must contain a positive number.

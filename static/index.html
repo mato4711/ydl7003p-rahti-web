@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>YDL-7003-P data analyzer</title>
-  <link rel="stylesheet" href="/static/style.css?v=7">
+  <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
 <header>
@@ -87,9 +87,10 @@
           <div class="grid2">
             <label>Gauge length (mm)<input id="gauge" type="number" step="any" value="50"></label>
             <label>Sample width (mm)<input id="width" type="number" step="any" value="15"></label>
-            <label>Thickness (µm)<input id="thickness" type="number" step="any" value="120"></label>
-            <label>Grammage (g/m²)<input id="grammage" type="number" step="any" value="100"></label>
+            <label>Thickness (µm, optional)<input id="thickness" type="number" min="0.000001" step="any" value="120" placeholder="unknown"></label>
+            <label>Grammage (g/m², optional)<input id="grammage" type="number" min="0.000001" step="any" value="100" placeholder="unknown"></label>
           </div>
+          <p class="optional-input-hint">Leave thickness or grammage empty when unknown. Dependent results will not be calculated.</p>
           <button id="updateCalcBtn">Update calculations</button>
           <div class="button-row">
             <button id="saveSettingsBtn">Save settings</button>
@@ -140,6 +141,6 @@
   </section>
 </main>
 
-<script src="/static/app.js?v=7"></script>
+<script src="/static/app.js?v=8"></script>
 </body>
 </html>

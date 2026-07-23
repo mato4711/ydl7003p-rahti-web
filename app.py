@@ -27,7 +27,7 @@ SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = int(os.environ.get("YDL_MAX_UPLOAD_BYTES", str(30 * 1024 * 1024)))
 SESSION_TTL_SECONDS = int(os.environ.get("YDL_SESSION_TTL_SECONDS", str(8 * 3600)))
 
-app = FastAPI(title="YDL-7003-P data analyzer", version="1.2")
+app = FastAPI(title="YDL-7003-P data analyzer", version="1.3")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
 
 _sessions: dict[str, dict[str, Any]] = {}
@@ -77,6 +77,25 @@ def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
         return float(str(value).replace(",", "."))
     except (TypeError, ValueError):
         return default
+
+
+def _optional_positive_float(value: Any, field_name: str) -> Optional[float]:
+    """Return None for an empty optional field; otherwise require a positive number."""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = float(str(value).replace(",", "."))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be a positive number or left empty.",
+        ) from exc
+    if not np.isfinite(parsed) or parsed <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be greater than zero or left empty.",
+        )
+    return parsed
 
 
 def _rect_json(rect: Optional[core.Rect]) -> Optional[dict[str, int]]:
@@ -253,10 +272,23 @@ def _payload(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_settings(state: dict[str, Any], payload: dict[str, Any]) -> None:
-    state["gauge_length_mm"] = _safe_float(payload.get("gauge_length_mm"), state["gauge_length_mm"]) or 50.0
-    state["sample_width_mm"] = _safe_float(payload.get("sample_width_mm"), state["sample_width_mm"]) or 15.0
-    state["thickness_um"] = _safe_float(payload.get("thickness_um"), state["thickness_um"])
-    state["grammage_g_m2"] = _safe_float(payload.get("grammage_g_m2"), state["grammage_g_m2"])
+    state["gauge_length_mm"] = _safe_float(
+        payload.get("gauge_length_mm"), state["gauge_length_mm"]
+    ) or 50.0
+    state["sample_width_mm"] = _safe_float(
+        payload.get("sample_width_mm"), state["sample_width_mm"]
+    ) or 15.0
+
+    # Explicit null/empty means that the optional property is unknown.
+    # If the key is absent, retain the current value for older clients.
+    if "thickness_um" in payload:
+        state["thickness_um"] = _optional_positive_float(
+            payload.get("thickness_um"), "Thickness"
+        )
+    if "grammage_g_m2" in payload:
+        state["grammage_g_m2"] = _optional_positive_float(
+            payload.get("grammage_g_m2"), "Grammage"
+        )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -274,10 +306,12 @@ async def analyze(
     image: UploadFile = File(...),
     gauge_length_mm: float = Form(50.0),
     sample_width_mm: float = Form(15.0),
-    thickness_um: Optional[float] = Form(120.0),
-    grammage_g_m2: Optional[float] = Form(100.0),
+    thickness_um: Optional[str] = Form(None),
+    grammage_g_m2: Optional[str] = Form(None),
 ) -> JSONResponse:
     raw = await image.read()
+    parsed_thickness_um = _optional_positive_float(thickness_um, "Thickness")
+    parsed_grammage_g_m2 = _optional_positive_float(grammage_g_m2, "Grammage")
     original = _decode_image(raw)
     screen_detection_ok = True
     try:
@@ -308,8 +342,8 @@ async def analyze(
         "layout_validation": layout_validation,
         "gauge_length_mm": gauge_length_mm,
         "sample_width_mm": sample_width_mm,
-        "thickness_um": thickness_um,
-        "grammage_g_m2": grammage_g_m2,
+        "thickness_um": parsed_thickness_um,
+        "grammage_g_m2": parsed_grammage_g_m2,
         "touched": time.time(),
     }
     (session_dir / source_name).write_bytes(raw)

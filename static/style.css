@@ -344,3 +344,11 @@ body.busy,
 body.busy * {
   cursor:wait !important;
 }
+
+
+.optional-input-hint {
+  margin:2px 0 5px;
+  color:#526678;
+  font-size:.72rem;
+  line-height:1.25;
+}

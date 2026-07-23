@@ -2543,8 +2543,22 @@ def draw_analysis_graph(result: AnalysisResult,
         ("Initial slope", f"{fmtv(result.elastic_slope_n_per_mm)} N/mm"),
         ("Fit R²", fmtv(result.modulus_r2, 4)),
         ("Tensile stiffness", f"{fmtv(result.tensile_stiffness_kn_per_m)} kN/m"),
-        ("Stiffness index", f"{fmtv(result.tensile_stiffness_index_knm_per_kg)} kN·m/kg"),
-        ("Tensile modulus", f"{fmtv(result.elastic_modulus_mpa)} MPa"),
+        (
+            "Stiffness index",
+            (
+                f"{fmtv(result.tensile_stiffness_index_knm_per_kg)} kN·m/kg"
+                if grammage_g_m2 is not None and grammage_g_m2 > 0
+                else "not calculated (no grammage)"
+            ),
+        ),
+        (
+            "Tensile modulus",
+            (
+                f"{fmtv(result.elastic_modulus_mpa)} MPa"
+                if thickness_um is not None and thickness_um > 0
+                else "not calculated (no thickness)"
+            ),
+        ),
         ("Tensile energy", f"{fmtv(result.toughness_n_mm)} N·mm ({fmtv(result.toughness_mj)} mJ)"),
     ]
     yrow = table.y1 + 58
@@ -2810,8 +2824,26 @@ def export_analysis_xlsx(path: str | Path, result: AnalysisResult, source_path: 
         ["Maximum force from extracted curve", result.max_force_data, "N", "maximum of extracted curve"],
         ["Initial force-extension slope", result.elastic_slope_n_per_mm, "N/mm", f"linear fit R²={result.modulus_r2:.4f}" if result.modulus_r2 is not None else ""],
         ["Tensile stiffness", result.tensile_stiffness_kn_per_m, "kN/m", "slope × gauge length / width"],
-        ["Tensile stiffness index", result.tensile_stiffness_index_knm_per_kg, "kN·m/kg", "requires grammage"],
-        ["Tensile modulus", result.elastic_modulus_mpa, "MPa", "requires thickness"],
+        [
+            "Tensile stiffness index",
+            result.tensile_stiffness_index_knm_per_kg,
+            "kN·m/kg",
+            (
+                "slope-derived tensile stiffness / grammage"
+                if grammage_g_m2 is not None
+                else "not calculated: grammage not provided"
+            ),
+        ],
+        [
+            "Tensile modulus",
+            result.elastic_modulus_mpa,
+            "MPa",
+            (
+                "slope × gauge length / (width × thickness)"
+                if thickness_um is not None
+                else "not calculated: thickness not provided"
+            ),
+        ],
         ["Tensile energy / area under curve", result.toughness_n_mm, "N·mm", "to curve-derived break extension"],
         ["Tensile energy / area under curve", result.toughness_mj, "mJ", "1 N·mm = 1 mJ"],
         ["Axis x min", result.x_min, "mm", "axis-grid marker on display graph"],

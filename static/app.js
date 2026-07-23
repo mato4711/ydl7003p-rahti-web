@@ -199,7 +199,7 @@ async function applyResponse(data, options={}) {
         : "Using the entered or pre-filled date and time.";
   }
 
-  showResults(data.result);
+  showResults(data.result, data.settings);
   renderValidation(data.layout_validation);
 
   await Promise.all([
@@ -239,8 +239,15 @@ function f(value, digits=2) {
   return value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(digits);
 }
 
-function showResults(r) {
+function showResults(r, settings={}) {
   const manual = r.break_is_manual ? " (manual)" : "";
+  const stiffnessIndexText = settings.grammage_g_m2 == null
+    ? "not calculated (grammage not provided)"
+    : `${f(r.tensile_stiffness_index_knm_per_kg,3)} kN·m/kg`;
+  const modulusText = settings.thickness_um == null
+    ? "not calculated (thickness not provided)"
+    : `${f(r.elastic_modulus_mpa,3)} MPa`;
+
   $("results").textContent =
 `Test date and time: ${r.test_datetime || "Not detected"}
 
@@ -255,8 +262,8 @@ Curve maximum force: ${f(r.max_force_data)} N
 Initial slope: ${f(r.elastic_slope_n_per_mm,3)} N/mm
 Fit R²: ${f(r.modulus_r2,4)}
 Tensile stiffness: ${f(r.tensile_stiffness_kn_per_m,3)} kN/m
-Stiffness index: ${f(r.tensile_stiffness_index_knm_per_kg,3)} kN·m/kg
-Tensile modulus: ${f(r.elastic_modulus_mpa,3)} MPa
+Stiffness index: ${stiffnessIndexText}
+Tensile modulus: ${modulusText}
 
 Tensile energy: ${f(r.toughness_n_mm,3)} N·mm (${f(r.toughness_mj,3)} mJ)
 Curve points: ${r.curve_points}
@@ -531,7 +538,12 @@ async function runAnalysis(file) {
   const form = new FormData();
   form.append("image", file);
   Object.entries(settingsPayload()).forEach(([key,value]) => {
-    if (value !== null) form.append(key, value);
+    // Submit optional fields even when empty, so blank values are preserved.
+    if (key === "thickness_um" || key === "grammage_g_m2") {
+      form.append(key, value == null ? "" : value);
+    } else if (value !== null) {
+      form.append(key, value);
+    }
   });
   try {
     let data = await api("/api/analyze", {method:"POST", body:form});
@@ -718,8 +730,12 @@ $("settingsFile").addEventListener("change", async event => {
     const settings = cfg.sample || cfg;
     if (settings.gauge_length_mm != null) $("gauge").value = settings.gauge_length_mm;
     if (settings.sample_width_mm != null) $("width").value = settings.sample_width_mm;
-    if (settings.thickness_um != null) $("thickness").value = settings.thickness_um;
-    if (settings.grammage_g_m2 != null) $("grammage").value = settings.grammage_g_m2;
+    if (Object.prototype.hasOwnProperty.call(settings, "thickness_um")) {
+      $("thickness").value = settings.thickness_um ?? "";
+    }
+    if (Object.prototype.hasOwnProperty.call(settings, "grammage_g_m2")) {
+      $("grammage").value = settings.grammage_g_m2 ?? "";
+    }
 
     if (session && cfg.graph_corners_norm) {
       const w = session.rectified_size.width;
