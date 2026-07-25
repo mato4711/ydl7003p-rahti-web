@@ -203,6 +203,20 @@ function escapeHtml(text) {
   })[c]);
 }
 
+function setPanelLoading(id, active, message=null, detail=null) {
+  const overlay = $(id);
+  if (!overlay) return;
+  overlay.classList.toggle("hidden", !active);
+  if (message) {
+    const strong = overlay.querySelector("strong");
+    if (strong) strong.textContent = message;
+  }
+  if (detail) {
+    const span = overlay.querySelector("span");
+    if (span) span.textContent = detail;
+  }
+}
+
 function setResultsProvisional(active) {
   resultsProvisional = Boolean(active);
 
@@ -390,12 +404,49 @@ async function applyResponse(data, options={}) {
   showResults(data.result, data.settings);
   renderValidation(data.layout_validation);
 
+  // Results are already available. Show loading guidance while image files are
+  // still being transferred to the browser.
+  setPanelLoading(
+    "screenLoading",
+    true,
+    "Loading corrected screen…",
+    "The image analysis is ready. The corrected screen image is being transferred and rendered."
+  );
+  setPanelLoading(
+    "graphLoading",
+    true,
+    "Loading analysis graph…",
+    "The numerical results are already available. The graph image may take a little longer to appear."
+  );
+
   await Promise.all([
     loadImage(originalImage, data.images.original),
-    loadImage(rectifiedImage, data.images.rectified),
-    loadCorrectedScreenImage(data),
-    loadImage(analysisImage, data.images.analysis_graph)
+    loadImage(rectifiedImage, data.images.rectified)
   ]);
+  drawOriginal();
+
+  const correctedPromise = (async () => {
+    await loadCorrectedScreenImage(data);
+    if (options.initial) {
+      if (data.layout_validation?.compliant && !axisConfirmationRequired) {
+        setTab("screenPanel");
+      } else if (!data.layout_validation?.compliant) {
+        setTab("originalPanel");
+      }
+    }
+    requestAnimationFrame(() => requestAnimationFrame(drawScreen));
+    setPanelLoading("screenLoading", false);
+
+    if (options.initial && data.layout_validation?.compliant && !axisConfirmationRequired) {
+      status("Corrected screen ready. Loading analysis graph…", "ready");
+    }
+  })();
+
+  const analysisPromise = (async () => {
+    await loadImage(analysisImage, data.images.analysis_graph);
+    requestAnimationFrame(() => requestAnimationFrame(drawAnalysis));
+    setPanelLoading("graphLoading", false);
+  })();
 
   const suggested = applyAxisSuggestions(data.axis_suggestions);
   if (!suggested) {
@@ -409,27 +460,35 @@ async function applyResponse(data, options={}) {
       $("axisHint").classList.remove("hidden");
       $("axisCard").classList.add("auto-updated");
       setTimeout(() => $("axisCard").classList.remove("auto-updated"), 2400);
+    }
+  }
+
+  await correctedPromise;
+
+  if (options.initial) {
+    if (!data.layout_validation?.compliant) {
+      status("Image analysed, but the expected completed-test layout was not confirmed.", "warning");
+    }
+  } else if (!axisConfirmationRequired && !data.axis_auto_updated && !suggested) {
+    status("Corrected screen ready. Loading analysis graph…", "ready");
+  }
+
+  await analysisPromise;
+
+  if (!suggested) {
+    if (axisConfirmationRequired) {
+      requireAxisConfirmation();
+    } else if (data.axis_auto_updated) {
       status("Graph area and axis calibration updated automatically.", "ready");
-    } else if (!options.initial) {
+    } else if (options.initial) {
+      if (data.layout_validation?.compliant && !axisConfirmationRequired) {
+        status("Analysis ready. Review the corrected screen and graph corners.", "ready");
+      }
+    } else {
       status("Ready.", "ready");
     }
   }
 
-  // Initial compliant analyses always open the corrected-screen tab. Axis
-  // suggestions are generated only after a manual graph-corner operation and
-  // must not prevent the normal first-load workflow.
-  if (options.initial) {
-    if (data.layout_validation?.compliant && !axisConfirmationRequired) {
-      setTab("screenPanel");
-      status("Analysis ready. Review the corrected screen and graph corners.", "ready");
-    } else if (!data.layout_validation?.compliant) {
-      setTab("originalPanel");
-      status("Image analysed, but the expected completed-test layout was not confirmed.", "warning");
-    }
-  }
-
-  // Draw after the selected tab is visible; hidden canvases are deliberately
-  // not resized.
   requestAnimationFrame(() => requestAnimationFrame(redrawAll));
 }
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>YDL-7003-P data analyzer</title>
-  <link rel="stylesheet" href="/static/style.css?v=13">
+  <link rel="stylesheet" href="/static/style.css?v=14">
 </head>
 <body>
 <header>
@@ -49,12 +49,18 @@
         <button id="applyCornersBtn">Apply screen corners and re-analyse</button>
       </div>
 
-      <div id="screenPanel" class="panel">
+      <div id="screenPanel" class="panel provisional-host">
         <p>Each yellow graph corner can be moved independently to correct residual graph distortion. Hover inside the graph to see extension, force and a magnified view.</p>
         <div class="canvas-wrap">
           <canvas id="screenCanvas"></canvas>
           <div id="screenMagnifier" class="magnifier"><canvas width="220" height="160"></canvas></div>
           <div id="graphReadout" class="graph-readout hidden"></div>
+        </div>
+        <div id="screenLoading" class="loading-overlay hidden" role="status" aria-live="polite">
+          <div>
+            <strong>Loading corrected screen…</strong>
+            <span>The image analysis is ready. The corrected screen image is being transferred and rendered.</span>
+          </div>
         </div>
         <div class="button-row">
           <button id="applyGraphBtn">Apply graph corners, then confirm axes</button>
@@ -64,6 +70,12 @@
 
       <div id="graphPanel" class="panel provisional-host">
         <div class="canvas-wrap"><canvas id="analysisCanvas"></canvas></div>
+        <div id="graphLoading" class="loading-overlay hidden" role="status" aria-live="polite">
+          <div>
+            <strong>Loading analysis graph…</strong>
+            <span>The numerical results are already available. The graph image may take a little longer to appear.</span>
+          </div>
+        </div>
         <div id="graphProvisional" class="provisional-overlay hidden" role="alert">
           <div>
             <strong>Analysis graph temporarily unavailable</strong>
@@ -153,7 +165,7 @@
   </section>
 </main>
 
-<script src="/static/settings_io.js?v=13"></script>
-<script src="/static/app.js?v=13"></script>
+<script src="/static/settings_io.js?v=14"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>

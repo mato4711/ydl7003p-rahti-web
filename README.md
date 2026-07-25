@@ -193,3 +193,13 @@ This protection is activated only when a user manually moves a graph corner.
   endpoint and the recognized instrument elongation. A clearly inconsistent
   default/incorrect X maximum is replaced only when the independent estimate
   agrees with a standard instrument scale.
+
+
+## Version 14 progressive image loading
+
+- Tensile-test results remain visible as soon as the server analysis JSON arrives.
+- The corrected-screen image now loads and is displayed independently of the analysis graph.
+- For a compliant new image, the application switches to **Corrected screen** as soon as that image is ready instead of waiting for the analysis graph.
+- The analysis graph loads afterward in the background.
+- Visible loading notices explain that the corrected screen and/or analysis graph are still being transferred and rendered.
+- This improves perceived responsiveness when the numerical results arrive before the PNG images.
