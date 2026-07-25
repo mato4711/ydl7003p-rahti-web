@@ -27,7 +27,7 @@ SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = int(os.environ.get("YDL_MAX_UPLOAD_BYTES", str(30 * 1024 * 1024)))
 SESSION_TTL_SECONDS = int(os.environ.get("YDL_SESSION_TTL_SECONDS", str(8 * 3600)))
 
-app = FastAPI(title="YDL-7003-P data analyzer", version="1.4")
+app = FastAPI(title="YDL-7003-P data analyzer", version="1.5")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
 
 _sessions: dict[str, dict[str, Any]] = {}
@@ -566,31 +566,15 @@ def export_xlsx(session_id: str) -> FileResponse:
 @app.get("/api/session/{session_id}/settings")
 def export_settings(session_id: str) -> Response:
     state = _state(session_id)
-    r = state["result"].graph_plot
-    h, w = state["rectified"].shape[:2]
     payload = {
-        "version": 2,
+        "version": 3,
         "kind": "mechanical_tester_sample_settings",
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
-        "source_image": state["source_name"],
         "sample": {
             "gauge_length_mm": state["gauge_length_mm"],
             "sample_width_mm": state["sample_width_mm"],
             "thickness_um": state["thickness_um"],
             "grammage_g_m2": state["grammage_g_m2"],
         },
-        "axes": {
-            "x_min": state["result"].x_min,
-            "x_max": state["result"].x_max,
-            "y_min": state["result"].y_min,
-            "y_max": state["result"].y_max,
-        },
-        "graph_plot_norm": core.rect_to_norm(r, w, h) if r else None,
-        "graph_corners_norm": (
-            (np.asarray(state["result"].graph_corners, dtype=float) /
-             np.array([max(w, 1), max(h, 1)], dtype=float)).tolist()
-            if state["result"].graph_corners is not None else None
-        ),
     }
     filename = f"{Path(state['source_name']).stem}_settings.json"
     return Response(

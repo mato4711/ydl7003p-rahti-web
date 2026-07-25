@@ -64,16 +64,7 @@ function settingsFilename() {
 
 function currentSettingsConfig() {
   return YDLSettingsIO.buildSettingsConfig({
-    sourceImage: session?.source_name || selectedFile?.name || "",
-    sample: settingsPayload(),
-    axes: {
-      x_min:num("xmin", 0),
-      x_max:num("xmax", 5),
-      y_min:num("ymin", 0),
-      y_max:num("ymax", 120)
-    },
-    graphCorners,
-    rectifiedSize: session?.rectified_size || null
+    sample: settingsPayload()
   });
 }
 
@@ -131,37 +122,15 @@ function putSettingsIntoControls(config) {
   }
   $("thickness").value = settings.thickness_um ?? "";
   $("grammage").value = settings.grammage_g_m2 ?? "";
-
-  if (config.axes) {
-    if (config.axes.x_min !== null) $("xmin").value = config.axes.x_min;
-    if (config.axes.x_max !== null) $("xmax").value = config.axes.x_max;
-    if (config.axes.y_min !== null) $("ymin").value = config.axes.y_min;
-    if (config.axes.y_max !== null) $("ymax").value = config.axes.y_max;
-  }
 }
 
-function updatePayloadFromSettingsConfig(config, sessionData) {
+function updatePayloadFromSettingsConfig(config) {
   putSettingsIntoControls(config);
-  const payload = {
-    ...settingsPayload(),
-    x_min:num("xmin", sessionData.result.x_min),
-    x_max:num("xmax", sessionData.result.x_max),
-    y_min:num("ymin", sessionData.result.y_min),
-    y_max:num("ymax", sessionData.result.y_max)
-  };
 
-  const restoredCorners = YDLSettingsIO.graphCornersFromConfig(
-    config,
-    sessionData.rectified_size.width,
-    sessionData.rectified_size.height
-  );
-  if (restoredCorners) {
-    payload.graph_corners = restoredCorners;
-    payload.reextract = true;
-  } else if (config.axes) {
-    payload.reextract = true;
-  }
-  return payload;
+  // Deliberately send only sample properties. The existing image retains its
+  // own detected graph/axes, and every newly selected photograph is analysed
+  // with fresh screen, graph and axis detection.
+  return settingsPayload();
 }
 
 async function api(url, options={}) {
@@ -686,7 +655,7 @@ async function runAnalysis(file) {
 
     if (pendingSettingsConfig) {
       const config = pendingSettingsConfig;
-      const payload = updatePayloadFromSettingsConfig(config, data);
+      const payload = updatePayloadFromSettingsConfig(config);
       data = await api(`/api/session/${data.session_id}/update`, {
         method:"POST",
         headers:{"Content-Type":"application/json"},
@@ -861,7 +830,7 @@ $("settingsFile").addEventListener("change", async event => {
     putSettingsIntoControls(config);
 
     if (session) {
-      const payload = updatePayloadFromSettingsConfig(config, session);
+      const payload = updatePayloadFromSettingsConfig(config);
       const data = await api(`/api/session/${session.session_id}/update`, {
         method:"POST",
         headers:{"Content-Type":"application/json"},

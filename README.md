@@ -124,3 +124,18 @@ after session expiry or pod replacement. Do not enable request-body logging.
 - Version-1 settings files using `graph_plot_norm` remain supported.
 - Invalid JSON, incorrect file types, invalid axes and malformed graph
   coordinates produce a visible error instead of being applied partially.
+
+
+## Version 10 settings-file changes
+
+- Settings files contain only:
+  - gauge length;
+  - sample width;
+  - thickness, including an empty value;
+  - grammage, including an empty value.
+- Graph corners, graph rectangles, screen corners and axis calibration are not
+  saved.
+- Every newly selected photograph therefore receives fresh screen-corner,
+  graph-corner and axis detection.
+- Version 1 and version 2 JSON files can still be loaded, but any stored axes or
+  graph positions in them are deliberately ignored.
