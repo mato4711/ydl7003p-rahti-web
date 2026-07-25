@@ -13,6 +13,7 @@ let drag = null;
 let previewUrl = null;
 let analysisSerial = 0;
 let analysisMeta = null;
+let pendingSettingsConfig = null;
 
 function status(message, kind="ready") {
   const el = $("status");
@@ -48,6 +49,119 @@ function settingsPayload() {
     thickness_um: num("thickness", null),
     grammage_g_m2: num("grammage", null)
   };
+}
+
+
+function settingsFilename() {
+  const source = session?.source_name || selectedFile?.name || "mechanical_tester";
+  const stem = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_");
+  const now = new Date();
+  const stamp =
+    `${now.getFullYear()}${pad2(now.getMonth()+1)}${pad2(now.getDate())}_` +
+    `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+  return `${stem}_settings_${stamp}.json`;
+}
+
+function currentSettingsConfig() {
+  return YDLSettingsIO.buildSettingsConfig({
+    sourceImage: session?.source_name || selectedFile?.name || "",
+    sample: settingsPayload(),
+    axes: {
+      x_min:num("xmin", 0),
+      x_max:num("xmax", 5),
+      y_min:num("ymin", 0),
+      y_max:num("ymax", 120)
+    },
+    graphCorners,
+    rectifiedSize: session?.rectified_size || null
+  });
+}
+
+async function saveSettingsWithPrompt(config) {
+  const text = JSON.stringify(config, null, 2) + "\n";
+  const suggestedName = settingsFilename();
+
+  if (window.showSaveFilePicker && window.isSecureContext) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{
+          description: "JSON settings",
+          accept: {"application/json": [".json"]}
+        }]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      status(`Settings saved as ${handle.name}.`, "ready");
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        status("Saving settings was cancelled.", "warning");
+        return;
+      }
+      console.warn("Native Save As dialog unavailable:", error);
+    }
+  }
+
+  // Fallback for browsers without the File System Access API.
+  const blob = new Blob([text], {type:"application/json;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = suggestedName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  status(
+    "Settings download started. In browsers without a Save As API, the browser's download settings control whether a location is requested.",
+    "ready"
+  );
+}
+
+function putSettingsIntoControls(config) {
+  const settings = config.sample || {};
+
+  if (settings.gauge_length_mm !== null) {
+    $("gauge").value = settings.gauge_length_mm;
+  }
+  if (settings.sample_width_mm !== null) {
+    $("width").value = settings.sample_width_mm;
+  }
+  $("thickness").value = settings.thickness_um ?? "";
+  $("grammage").value = settings.grammage_g_m2 ?? "";
+
+  if (config.axes) {
+    if (config.axes.x_min !== null) $("xmin").value = config.axes.x_min;
+    if (config.axes.x_max !== null) $("xmax").value = config.axes.x_max;
+    if (config.axes.y_min !== null) $("ymin").value = config.axes.y_min;
+    if (config.axes.y_max !== null) $("ymax").value = config.axes.y_max;
+  }
+}
+
+function updatePayloadFromSettingsConfig(config, sessionData) {
+  putSettingsIntoControls(config);
+  const payload = {
+    ...settingsPayload(),
+    x_min:num("xmin", sessionData.result.x_min),
+    x_max:num("xmax", sessionData.result.x_max),
+    y_min:num("ymin", sessionData.result.y_min),
+    y_max:num("ymax", sessionData.result.y_max)
+  };
+
+  const restoredCorners = YDLSettingsIO.graphCornersFromConfig(
+    config,
+    sessionData.rectified_size.width,
+    sessionData.rectified_size.height
+  );
+  if (restoredCorners) {
+    payload.graph_corners = restoredCorners;
+    payload.reextract = true;
+  } else if (config.axes) {
+    payload.reextract = true;
+  }
+  return payload;
 }
 
 async function api(url, options={}) {
@@ -569,6 +683,19 @@ async function runAnalysis(file) {
     }
 
     if (serial !== analysisSerial) return;
+
+    if (pendingSettingsConfig) {
+      const config = pendingSettingsConfig;
+      const payload = updatePayloadFromSettingsConfig(config, data);
+      data = await api(`/api/session/${data.session_id}/update`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload)
+      });
+      pendingSettingsConfig = null;
+    }
+
+    if (serial !== analysisSerial) return;
     await applyResponse(data, {initial:true});
   } catch (error) {
     console.error(error);
@@ -714,49 +841,46 @@ document.querySelectorAll("[data-export]").forEach(button => {
   };
 });
 
-$("saveSettingsBtn").onclick = () => {
-  if (!session) {
-    status("Analyse an image first.", "error");
-    return;
+$("saveSettingsBtn").onclick = async () => {
+  try {
+    const config = currentSettingsConfig();
+    await saveSettingsWithPrompt(config);
+  } catch (error) {
+    console.error(error);
+    status("Could not save settings: " + error.message, "error");
   }
-  window.location = `/api/session/${session.session_id}/settings`;
 };
 
 $("settingsFile").addEventListener("change", async event => {
   const file = event.target.files[0];
   if (!file) return;
-  try {
-    const cfg = JSON.parse(await file.text());
-    const settings = cfg.sample || cfg;
-    if (settings.gauge_length_mm != null) $("gauge").value = settings.gauge_length_mm;
-    if (settings.sample_width_mm != null) $("width").value = settings.sample_width_mm;
-    if (Object.prototype.hasOwnProperty.call(settings, "thickness_um")) {
-      $("thickness").value = settings.thickness_um ?? "";
-    }
-    if (Object.prototype.hasOwnProperty.call(settings, "grammage_g_m2")) {
-      $("grammage").value = settings.grammage_g_m2 ?? "";
-    }
 
-    if (session && cfg.graph_corners_norm) {
-      const w = session.rectified_size.width;
-      const h = session.rectified_size.height;
-      graphCorners = cfg.graph_corners_norm.map(p => [p[0]*w, p[1]*h]);
-      await update({graph_corners:graphCorners, reextract:true});
-    } else if (session && cfg.graph_plot_norm) {
-      const n = cfg.graph_plot_norm;
-      const w = session.rectified_size.width;
-      const h = session.rectified_size.height;
-      graphCorners = [
-        [n[0]*w,n[1]*h],[n[2]*w,n[1]*h],
-        [n[2]*w,n[3]*h],[n[0]*w,n[3]*h]
-      ];
-      await update({graph_corners:graphCorners, reextract:true});
-    } else if (session) {
-      await update({});
+  try {
+    const parsed = JSON.parse(await file.text());
+    const config = YDLSettingsIO.validateSettingsConfig(parsed);
+    putSettingsIntoControls(config);
+
+    if (session) {
+      const payload = updatePayloadFromSettingsConfig(config, session);
+      const data = await api(`/api/session/${session.session_id}/update`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload)
+      });
+      await applyResponse(data);
+      status(`Settings loaded from ${file.name}.`, "ready");
+    } else {
+      pendingSettingsConfig = config;
+      status(
+        `Settings loaded from ${file.name}. They will be applied automatically to the next analysed image.`,
+        "ready"
+      );
     }
-    status("Settings loaded.", "ready");
   } catch (error) {
     status("Could not load settings: " + error.message, "error");
+  } finally {
+    // Permit the user to select the same file again.
+    event.target.value = "";
   }
 });
 

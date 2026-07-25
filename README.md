@@ -106,3 +106,21 @@ after session expiry or pod replacement. Do not enable request-body logging.
 - Tensile modulus is omitted when thickness is unavailable.
 - Web results, the analysis graph and Excel notes explain omitted values.
 - If an optional field is not empty, it must contain a positive number.
+
+
+## Version 9 settings-file changes
+
+- Save settings uses the browser's native Save As dialog through
+  `showSaveFilePicker` when supported. Microsoft Edge and Chromium-based Chrome
+  support this on HTTPS and localhost.
+- A standards-compatible download fallback remains for other browsers. In that
+  fallback, the browser's own "ask where to save each file" setting determines
+  whether a location dialog appears.
+- The settings file now saves the values currently visible in the browser,
+  including unsaved edits, blank optional thickness/grammage values, axis
+  calibration and normalized graph-corner positions.
+- Settings can be loaded before an image is selected. They are retained and
+  applied automatically after the next image has been analysed.
+- Version-1 settings files using `graph_plot_norm` remain supported.
+- Invalid JSON, incorrect file types, invalid axes and malformed graph
+  coordinates produce a visible error instead of being applied partially.
