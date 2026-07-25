@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>YDL-7003-P data analyzer</title>
-  <link rel="stylesheet" href="/static/style.css?v=10">
+  <link rel="stylesheet" href="/static/style.css?v=12">
 </head>
 <body>
 <header>
@@ -37,7 +37,7 @@
       <div class="tabs">
         <button class="tab active" data-tab="originalPanel">Original / screen corners</button>
         <button class="tab" data-tab="screenPanel">Corrected screen</button>
-        <button class="tab" data-tab="graphPanel">Analysis graph</button>
+        <button id="analysisTab" class="tab" data-tab="graphPanel">Analysis graph</button>
       </div>
 
       <div id="originalPanel" class="panel active">
@@ -57,13 +57,19 @@
           <div id="graphReadout" class="graph-readout hidden"></div>
         </div>
         <div class="button-row">
-          <button id="applyGraphBtn">Apply graph corners and re-extract</button>
+          <button id="applyGraphBtn">Apply graph corners, then confirm axes</button>
           <button id="autoGraphBtn">Auto-detect graph again</button>
         </div>
       </div>
 
-      <div id="graphPanel" class="panel">
+      <div id="graphPanel" class="panel provisional-host">
         <div class="canvas-wrap"><canvas id="analysisCanvas"></canvas></div>
+        <div id="graphProvisional" class="provisional-overlay hidden" role="alert">
+          <div>
+            <strong>Analysis graph temporarily unavailable</strong>
+            <span>Confirm the axis calibration after applying the adjusted graph corners.</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -125,7 +131,7 @@
           <p id="datetimeHint" class="datetime-hint">Detected from the tester screen when readable.</p>
         </section>
 
-        <section id="resultCard" class="card dashboard-card result-card" data-panel-id="results">
+        <section id="resultCard" class="card dashboard-card result-card provisional-host" data-panel-id="results">
           <h2><span class="drag-handle" title="Drag panel">⋮⋮</span>Tensile test results</h2>
           <pre id="results">No analysis yet.</pre>
           <h2 class="export-heading">Exports</h2>
@@ -134,6 +140,12 @@
             <button data-export="pdf">PDF</button>
             <button data-export="png">Corrected PNG</button>
           </div>
+          <div id="resultProvisional" class="provisional-overlay hidden" role="alert">
+            <div>
+              <strong>Results awaiting axis confirmation</strong>
+              <span>The graph corners were adjusted. Verify the axis values and confirm before using results or exports.</span>
+            </div>
+          </div>
         </section>
 
       </div>
@@ -141,7 +153,7 @@
   </section>
 </main>
 
-<script src="/static/settings_io.js?v=10"></script>
-<script src="/static/app.js?v=10"></script>
+<script src="/static/settings_io.js?v=12"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>

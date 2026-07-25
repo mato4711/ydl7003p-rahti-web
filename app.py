@@ -27,7 +27,7 @@ SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = int(os.environ.get("YDL_MAX_UPLOAD_BYTES", str(30 * 1024 * 1024)))
 SESSION_TTL_SECONDS = int(os.environ.get("YDL_SESSION_TTL_SECONDS", str(8 * 3600)))
 
-app = FastAPI(title="YDL-7003-P data analyzer", version="1.5")
+app = FastAPI(title="YDL-7003-P data analyzer", version="1.7")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
 
 _sessions: dict[str, dict[str, Any]] = {}
@@ -255,6 +255,9 @@ def _payload(state: dict[str, Any]) -> dict[str, Any]:
         }),
         "axis_suggestions": state.pop("axis_suggestions", None),
         "axis_auto_updated": bool(state.pop("axis_auto_updated", False)),
+        "axis_confirmation_required": bool(
+            state.get("axis_confirmation_required", False)
+        ),
         "analysis_graph_meta": _analysis_meta_json(state.get("analysis_graph_meta")),
         "settings": {
             "gauge_length_mm": state["gauge_length_mm"],
@@ -344,6 +347,7 @@ async def analyze(
         "sample_width_mm": sample_width_mm,
         "thickness_um": parsed_thickness_um,
         "grammage_g_m2": parsed_grammage_g_m2,
+        "axis_confirmation_required": False,
         "touched": time.time(),
     }
     (session_dir / source_name).write_bytes(raw)
@@ -361,6 +365,7 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
     screen_corners = payload.get("screen_corners")
     screen_changed = screen_corners is not None
     if screen_changed:
+        state["axis_confirmation_required"] = False
         previous_datetime = state["result"].test_datetime
         previous_datetime_source = state["result"].test_datetime_source
         arr = np.asarray(screen_corners, dtype=np.float32)
@@ -401,6 +406,8 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
                 state["axis_suggestions"] = _axis_suggestions(old_graph_corners, q, result)
             result.graph_corners = q
             result.graph_plot = core.graph_corners_to_rect(q, w, h)
+            if payload.get("manual_graph_adjustment"):
+                state["axis_confirmation_required"] = True
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid graph corners: {exc}")
 
@@ -423,6 +430,7 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
         raise HTTPException(status_code=400, detail="Axis maxima must exceed minima.")
 
     if payload.get("auto_graph"):
+        state["axis_confirmation_required"] = False
         result.graph_plot = core.find_graph_plot(state["rectified"])
         result.graph_corners = core.graph_corners_from_rect(result.graph_plot)
         (
@@ -470,6 +478,8 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
             result.manual_break_extension = float(value)
 
     _refresh_outputs(state)
+    if payload.get("axis_confirmed"):
+        state["axis_confirmation_required"] = False
     return JSONResponse(_payload(state))
 
 
@@ -505,9 +515,21 @@ def image(session_id: str, kind: str) -> FileResponse:
     return FileResponse(state["dir"] / f"{kind}.png", media_type="image/png")
 
 
+def _require_confirmed_axes(state: dict[str, Any]) -> None:
+    if state.get("axis_confirmation_required", False):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Graph corners were adjusted manually. Confirm the axis "
+                "calibration and re-extract the curve before exporting."
+            ),
+        )
+
+
 @app.get("/api/session/{session_id}/export/csv")
 def export_csv(session_id: str) -> Response:
     state = _state(session_id)
+    _require_confirmed_axes(state)
     curve = state["result"].curve_xy
     if curve is None or len(curve) == 0:
         raise HTTPException(status_code=400, detail="No curve data are available.")
@@ -526,6 +548,7 @@ def export_csv(session_id: str) -> Response:
 @app.get("/api/session/{session_id}/export/png")
 def export_png(session_id: str) -> FileResponse:
     state = _state(session_id)
+    _require_confirmed_axes(state)
     filename = f"{Path(state['source_name']).stem}_rectified.png"
     return FileResponse(state["dir"] / "rectified.png", media_type="image/png", filename=filename)
 
@@ -533,6 +556,7 @@ def export_png(session_id: str) -> FileResponse:
 @app.get("/api/session/{session_id}/export/pdf")
 def export_pdf(session_id: str) -> FileResponse:
     state = _state(session_id)
+    _require_confirmed_axes(state)
     path = state["dir"] / "analysis.pdf"
     core.export_analysis_pdf(
         path,
@@ -548,6 +572,7 @@ def export_pdf(session_id: str) -> FileResponse:
 @app.get("/api/session/{session_id}/export/xlsx")
 def export_xlsx(session_id: str) -> FileResponse:
     state = _state(session_id)
+    _require_confirmed_axes(state)
     path = state["dir"] / "analysis.xlsx"
     core.export_analysis_xlsx(
         path, state["result"], state["source_path"],

@@ -14,6 +14,9 @@ let previewUrl = null;
 let analysisSerial = 0;
 let analysisMeta = null;
 let pendingSettingsConfig = null;
+let graphCornersEdited = false;
+let axisConfirmationRequired = false;
+let resultsProvisional = false;
 
 function status(message, kind="ready") {
   const el = $("status");
@@ -28,6 +31,13 @@ function setBusy(busy) {
 }
 
 function setTab(panelId) {
+  if (panelId === "graphPanel" && resultsProvisional) {
+    panelId = "screenPanel";
+    status(
+      "Analysis graph unavailable until the adjusted graph corners and axis calibration are confirmed.",
+      "warning"
+    );
+  }
   document.querySelectorAll(".tab").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.tab === panelId);
   });
@@ -193,16 +203,69 @@ function escapeHtml(text) {
   })[c]);
 }
 
-function clearAxisSuggestion() {
+function setResultsProvisional(active) {
+  resultsProvisional = Boolean(active);
+
+  $("graphProvisional").classList.toggle("hidden", !resultsProvisional);
+  $("resultProvisional").classList.toggle("hidden", !resultsProvisional);
+  $("resultCard").classList.toggle("results-provisional", resultsProvisional);
+
+  $("analysisTab").disabled = resultsProvisional;
+  $("analysisTab").title = resultsProvisional
+    ? "Confirm axis calibration after applying the adjusted graph corners."
+    : "";
+
+  document.querySelectorAll("[data-export]").forEach(button => {
+    button.disabled = resultsProvisional;
+    button.title = resultsProvisional
+      ? "Exports are unavailable until axis calibration is confirmed."
+      : "";
+  });
+
+  $("analysisCanvas").style.pointerEvents = resultsProvisional ? "none" : "";
+
+  if (
+    resultsProvisional &&
+    document.querySelector("#graphPanel").classList.contains("active")
+  ) {
+    setTab("screenPanel");
+  }
+}
+
+function clearAxisSuggestion(force=false) {
+  // Manual graph-corner changes must remain visibly unconfirmed until the user
+  // clicks the confirmation button.
+  if (axisConfirmationRequired && !force) return;
   $("axisCard").classList.remove("needs-confirmation", "auto-updated");
   $("axisHint").classList.add("hidden");
   $("axisHint").textContent = "";
+}
+
+function requireAxisConfirmation(message=null) {
+  axisConfirmationRequired = true;
+  setResultsProvisional(true);
+  $("axisHint").textContent = message ||
+    "Graph corners were changed manually. Verify X min, X max, Y min and Y max, then click “Confirm axes and re-extract curve”.";
+  $("axisHint").classList.remove("hidden");
+  $("axisCard").classList.remove("auto-updated");
+  $("axisCard").classList.add("needs-confirmation");
+  $("axisCard").scrollIntoView({behavior:"smooth", block:"center"});
+
+  // X max is normally the most likely value to need attention after the
+  // horizontal graph boundary changes.
+  setTimeout(() => {
+    $("xmax").focus({preventScroll:true});
+    $("xmax").select();
+  }, 350);
+
+  status("Graph corners applied. Please confirm the highlighted axis calibration.", "warning");
 }
 
 function applyAxisSuggestions(suggestions) {
   if (!suggestions || !Object.keys(suggestions).length) {
     return false;
   }
+  axisConfirmationRequired = true;
   const mapping = {x_min:"xmin", x_max:"xmax", y_min:"ymin", y_max:"ymax"};
   const labels = [];
   let first = null;
@@ -254,6 +317,10 @@ function dateTimeFromInputs() {
 async function applyResponse(data, options={}) {
   session = data;
   analysisMeta = data.analysis_graph_meta || null;
+  if (data.axis_confirmation_required) {
+    axisConfirmationRequired = true;
+    setResultsProvisional(true);
+  }
   corners = (data.screen_corners || []).map(p => [...p]);
   if (data.result.graph_corners) {
     graphCorners = data.result.graph_corners.map(p => [...p]);
@@ -296,7 +363,9 @@ async function applyResponse(data, options={}) {
   const suggested = applyAxisSuggestions(data.axis_suggestions);
   if (!suggested) {
     clearAxisSuggestion();
-    if (data.axis_auto_updated) {
+    if (axisConfirmationRequired) {
+      requireAxisConfirmation();
+    } else if (data.axis_auto_updated) {
       $("axisHint").textContent =
         `Graph and axes auto-detected: X ${data.result.x_min}–${data.result.x_max} mm, ` +
         `Y ${data.result.y_min}–${data.result.y_max} N.`;
@@ -596,6 +665,14 @@ $("screenCanvas").addEventListener("pointermove", event => {
     const x = (event.clientX - rect.left) / scale;
     const y = (event.clientY - rect.top) / scale;
     graphCorners[drag.index] = [x,y];
+    if (!graphCornersEdited) {
+      graphCornersEdited = true;
+      setResultsProvisional(true);
+      status(
+        "Graph corner adjusted. Apply the graph corners, then confirm the axis calibration.",
+        "warning"
+      );
+    }
     drawScreen();
     drawMagnifier("screenMagnifier", rectifiedImage, x, y);
   } else {
@@ -617,6 +694,10 @@ async function runAnalysis(file) {
     status("Choose an image first.", "error");
     return;
   }
+  graphCornersEdited = false;
+  axisConfirmationRequired = false;
+  setResultsProvisional(false);
+  clearAxisSuggestion(true);
   const serial = ++analysisSerial;
   const form = new FormData();
   form.append("image", file);
@@ -679,8 +760,11 @@ $("imageFile").addEventListener("change", async event => {
   session = null;
   corners = [];
   graphCorners = [];
+  graphCornersEdited = false;
+  axisConfirmationRequired = false;
+  setResultsProvisional(false);
   renderValidation(null);
-  clearAxisSuggestion();
+  clearAxisSuggestion(true);
   $("results").textContent = "Analysis in progress…";
   setTab("originalPanel");
   try {
@@ -713,17 +797,54 @@ async function update(extra={}) {
       body:JSON.stringify(payload)
     });
     await applyResponse(data);
+    return data;
   } catch (error) {
     console.error(error);
+    return null;
   }
 }
 
 $("applyCornersBtn").onclick = () => update({screen_corners:corners});
-$("applyGraphBtn").onclick = () => update({graph_corners:graphCorners, reextract:true});
-$("autoGraphBtn").onclick = () => update({auto_graph:true, reextract:true});
+
+$("applyGraphBtn").onclick = async () => {
+  const wasEdited = graphCornersEdited;
+  const data = await update({
+    graph_corners:graphCorners,
+    reextract:true,
+    manual_graph_adjustment:wasEdited
+  });
+  if (data && wasEdited) {
+    graphCornersEdited = false;
+    requireAxisConfirmation(
+      "Graph corners were changed manually and have now been applied. Verify all four axis values, then click “Confirm axes and re-extract curve”."
+    );
+  }
+};
+
+$("autoGraphBtn").onclick = async () => {
+  graphCornersEdited = false;
+  const data = await update({auto_graph:true, reextract:true});
+  if (data) {
+    axisConfirmationRequired = false;
+    clearAxisSuggestion(true);
+    setResultsProvisional(false);
+    status("Graph area and axis calibration updated automatically.", "ready");
+  }
+};
+
 $("reextractBtn").onclick = async () => {
-  clearAxisSuggestion();
-  await update({reextract:true});
+  const confirmingManualCorners =
+    axisConfirmationRequired || session?.axis_confirmation_required;
+  const data = await update({
+    reextract:true,
+    axis_confirmed:confirmingManualCorners
+  });
+  if (data) {
+    axisConfirmationRequired = false;
+    clearAxisSuggestion(true);
+    setResultsProvisional(false);
+    status("Axis calibration confirmed and curve re-extracted.", "ready");
+  }
 };
 $("updateCalcBtn").onclick = () => update({});
 $("editedBtn").onclick = () => update({
@@ -732,7 +853,7 @@ $("editedBtn").onclick = () => update({
 });
 
 ["xmin","xmax","ymin","ymax"].forEach(id => {
-  $(id).addEventListener("input", clearAxisSuggestion);
+  $(id).addEventListener("input", () => clearAxisSuggestion(false));
 });
 
 $("trainBtn").onclick = async () => {
@@ -766,7 +887,11 @@ $("updateDateTimeBtn").onclick = async () => {
 };
 
 $("analysisCanvas").addEventListener("click", async event => {
-  if (!event.ctrlKey || event.button !== 0 || !session || !analysisMeta?.plot) return;
+  if (
+    resultsProvisional ||
+    !event.ctrlKey || event.button !== 0 ||
+    !session || !analysisMeta?.plot
+  ) return;
 
   event.preventDefault();
   const canvas = event.currentTarget;
@@ -802,6 +927,13 @@ document.querySelectorAll(".tab").forEach(button => {
 
 document.querySelectorAll("[data-export]").forEach(button => {
   button.onclick = () => {
+    if (resultsProvisional || session?.axis_confirmation_required) {
+      status(
+        "Exports are unavailable until the adjusted graph corners and axis calibration are confirmed.",
+        "warning"
+      );
+      return;
+    }
     if (!session) {
       status("Analyse an image first.", "error");
       return;

@@ -139,3 +139,39 @@ after session expiry or pod replacement. Do not enable request-body logging.
   graph-corner and axis detection.
 - Version 1 and version 2 JSON files can still be loaded, but any stored axes or
   graph positions in them are deliberately ignored.
+
+
+## Version 11 graph-corner confirmation
+
+- Moving any graph corner marks the graph geometry as manually edited.
+- After selecting **Apply graph corners, then confirm axes**, the application:
+  - applies the four graph corners;
+  - highlights the Axis calibration panel;
+  - scrolls the panel into view;
+  - focuses and selects X max;
+  - asks the user to verify all four axis values;
+  - keeps the warning active until **Confirm axes and re-extract curve** is used.
+- Editing an axis field no longer dismisses the confirmation request.
+- Auto-detecting the graph clears the manual-corner confirmation state because
+  graph corners and axes are then detected together.
+
+
+## Version 12 provisional-result protection
+
+This protection is activated only when a user manually moves a graph corner.
+
+- As soon as a graph corner is moved:
+  - the Analysis graph tab is disabled;
+  - tensile results are covered by a confirmation notice;
+  - Excel, PDF and corrected-PNG exports are disabled;
+  - manual break-point selection is disabled.
+- Applying the graph corners keeps the results provisional and moves attention
+  to Axis calibration.
+- Results and exports become available only after **Confirm axes and re-extract
+  curve** completes successfully.
+- Changing axis values by itself does not activate provisional mode.
+- Auto-detecting the graph, choosing a new photograph, correcting the whole
+  screen, or re-analysing the image performs fresh detection and clears the
+  provisional state.
+- The backend also rejects direct export requests while manually adjusted graph
+  corners await axis confirmation.
