@@ -206,14 +206,22 @@ function escapeHtml(text) {
 function setResultsProvisional(active) {
   resultsProvisional = Boolean(active);
 
-  $("graphProvisional").classList.toggle("hidden", !resultsProvisional);
-  $("resultProvisional").classList.toggle("hidden", !resultsProvisional);
-  $("resultCard").classList.toggle("results-provisional", resultsProvisional);
+  const graphNotice = $("graphProvisional");
+  const resultNotice = $("resultProvisional");
+  const resultCard = $("resultCard");
+  const analysisTab = $("analysisTab");
+  const analysisCanvas = $("analysisCanvas");
 
-  $("analysisTab").disabled = resultsProvisional;
-  $("analysisTab").title = resultsProvisional
-    ? "Confirm axis calibration after applying the adjusted graph corners."
-    : "";
+  if (graphNotice) graphNotice.classList.toggle("hidden", !resultsProvisional);
+  if (resultNotice) resultNotice.classList.toggle("hidden", !resultsProvisional);
+  if (resultCard) resultCard.classList.toggle("results-provisional", resultsProvisional);
+
+  if (analysisTab) {
+    analysisTab.disabled = resultsProvisional;
+    analysisTab.title = resultsProvisional
+      ? "Confirm axis calibration after applying the adjusted graph corners."
+      : "";
+  }
 
   document.querySelectorAll("[data-export]").forEach(button => {
     button.disabled = resultsProvisional;
@@ -222,12 +230,12 @@ function setResultsProvisional(active) {
       : "";
   });
 
-  $("analysisCanvas").style.pointerEvents = resultsProvisional ? "none" : "";
+  if (analysisCanvas) {
+    analysisCanvas.style.pointerEvents = resultsProvisional ? "none" : "";
+  }
 
-  if (
-    resultsProvisional &&
-    document.querySelector("#graphPanel").classList.contains("active")
-  ) {
+  const graphPanel = document.querySelector("#graphPanel");
+  if (resultsProvisional && graphPanel?.classList.contains("active")) {
     setTab("screenPanel");
   }
 }
@@ -314,6 +322,36 @@ function dateTimeFromInputs() {
   return `${date.replaceAll("-", "/")} ${time}`;
 }
 
+function imageAppearsBlankOrDark(image) {
+  if (!image?.naturalWidth || !image?.naturalHeight) return true;
+  const sample = document.createElement("canvas");
+  sample.width = 32;
+  sample.height = 20;
+  const ctx = sample.getContext("2d", {willReadFrequently:true});
+  ctx.drawImage(image, 0, 0, sample.width, sample.height);
+  const pixels = ctx.getImageData(0, 0, sample.width, sample.height).data;
+  let brightness = 0;
+  let nonBlack = 0;
+  const count = pixels.length / 4;
+  for (let i = 0; i < pixels.length; i += 4) {
+    const value = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+    brightness += value;
+    if (value > 12) nonBlack += 1;
+  }
+  return brightness / count < 8 || nonBlack / count < 0.04;
+}
+
+async function loadCorrectedScreenImage(data) {
+  try {
+    await loadImage(screenImage, data.images.annotated);
+    if (!imageAppearsBlankOrDark(screenImage)) return;
+    console.warn("Annotated corrected-screen image was blank/dark; using rectified image.");
+  } catch (error) {
+    console.warn("Could not load annotated corrected-screen image:", error);
+  }
+  await loadImage(screenImage, data.images.rectified);
+}
+
 async function applyResponse(data, options={}) {
   session = data;
   analysisMeta = data.analysis_graph_meta || null;
@@ -355,10 +393,9 @@ async function applyResponse(data, options={}) {
   await Promise.all([
     loadImage(originalImage, data.images.original),
     loadImage(rectifiedImage, data.images.rectified),
-    loadImage(screenImage, data.images.annotated),
+    loadCorrectedScreenImage(data),
     loadImage(analysisImage, data.images.analysis_graph)
   ]);
-  redrawAll();
 
   const suggested = applyAxisSuggestions(data.axis_suggestions);
   if (!suggested) {
@@ -373,18 +410,27 @@ async function applyResponse(data, options={}) {
       $("axisCard").classList.add("auto-updated");
       setTimeout(() => $("axisCard").classList.remove("auto-updated"), 2400);
       status("Graph area and axis calibration updated automatically.", "ready");
-    } else if (options.initial) {
-      if (data.layout_validation?.compliant) {
-        setTab("screenPanel");
-        status("Analysis ready. Review the corrected screen and graph corners.", "ready");
-      } else {
-        setTab("originalPanel");
-        status("Image analysed, but the expected completed-test layout was not confirmed.", "warning");
-      }
-    } else {
+    } else if (!options.initial) {
       status("Ready.", "ready");
     }
   }
+
+  // Initial compliant analyses always open the corrected-screen tab. Axis
+  // suggestions are generated only after a manual graph-corner operation and
+  // must not prevent the normal first-load workflow.
+  if (options.initial) {
+    if (data.layout_validation?.compliant && !axisConfirmationRequired) {
+      setTab("screenPanel");
+      status("Analysis ready. Review the corrected screen and graph corners.", "ready");
+    } else if (!data.layout_validation?.compliant) {
+      setTab("originalPanel");
+      status("Image analysed, but the expected completed-test layout was not confirmed.", "warning");
+    }
+  }
+
+  // Draw after the selected tab is visible; hidden canvases are deliberately
+  // not resized.
+  requestAnimationFrame(() => requestAnimationFrame(redrawAll));
 }
 
 function f(value, digits=2) {
@@ -423,11 +469,18 @@ ${r.mechanical_note ? "\nNote: " + r.mechanical_note : ""}`;
 }
 
 function fitCanvas(canvas, image) {
-  if (!image.naturalWidth || !image.naturalHeight) return 1;
+  if (!image.naturalWidth || !image.naturalHeight) return null;
   const wrap = canvas.parentElement;
+  const availableWidth = wrap.clientWidth;
+  const availableHeight = wrap.clientHeight;
+
+  // A display:none tab reports zero dimensions. Leave that canvas untouched
+  // and redraw it after the tab becomes visible.
+  if (availableWidth < 2 || availableHeight < 2) return null;
+
   const scale = Math.min(
-    wrap.clientWidth / image.naturalWidth,
-    wrap.clientHeight / image.naturalHeight
+    availableWidth / image.naturalWidth,
+    availableHeight / image.naturalHeight
   );
   canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
   canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
@@ -448,6 +501,7 @@ function drawOriginal() {
   if (!originalImage.naturalWidth) return;
   const canvas = $("originalCanvas");
   const scale = fitCanvas(canvas, originalImage);
+  if (scale == null) return;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(originalImage, 0, 0, canvas.width, canvas.height);
 
@@ -471,6 +525,7 @@ function drawScreen() {
   if (!screenImage.naturalWidth) return;
   const canvas = $("screenCanvas");
   const scale = fitCanvas(canvas, screenImage);
+  if (scale == null) return;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(screenImage, 0, 0, canvas.width, canvas.height);
 
@@ -494,6 +549,7 @@ function drawAnalysis() {
   if (!analysisImage.naturalWidth) return;
   const canvas = $("analysisCanvas");
   const scale = fitCanvas(canvas, analysisImage);
+  if (scale == null) return;
   canvas.getContext("2d").drawImage(analysisImage, 0, 0, canvas.width, canvas.height);
   canvas.dataset.scale = scale;
 }
@@ -698,6 +754,11 @@ async function runAnalysis(file) {
   axisConfirmationRequired = false;
   setResultsProvisional(false);
   clearAxisSuggestion(true);
+
+  rectifiedImage = new Image();
+  screenImage = new Image();
+  analysisImage = new Image();
+
   const serial = ++analysisSerial;
   const form = new FormData();
   form.append("image", file);

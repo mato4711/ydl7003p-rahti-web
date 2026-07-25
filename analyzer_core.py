@@ -2062,6 +2062,60 @@ def calculate_mechanical_properties(result: AnalysisResult,
         extra = "No sufficiently linear early segment found for tensile modulus fit."
         result.mechanical_note = (result.mechanical_note + "; " + extra) if result.mechanical_note else extra
 
+
+def refine_x_axis_from_elongation(
+    x_min: float,
+    x_max: float,
+    break_x_est: Optional[float],
+    elongation: Optional[float],
+) -> float:
+    """Refine an uncertain graph X maximum using two independent observations.
+
+    ``break_x_est`` is obtained from the rightmost green-curve pixel using the
+    provisional calibration. Its fractional position in the graph is therefore
+    independent of the numerical X scale. If the displayed instrument
+    elongation is reliable, elongation / fractional_position estimates the
+    actual full-scale X maximum.
+
+    The estimate is accepted only when it is close to a common YDL display
+    scale and materially disagrees with the provisional OCR result.
+    """
+    if (
+        elongation is None or break_x_est is None
+        or not np.isfinite(elongation) or not np.isfinite(break_x_est)
+        or not (x_max > x_min) or elongation <= 0
+    ):
+        return float(x_max)
+
+    fraction = (float(break_x_est) - float(x_min)) / float(x_max - x_min)
+    if not 0.15 <= fraction <= 0.95:
+        return float(x_max)
+
+    estimated_range = float(elongation) / fraction
+    candidate_max = float(x_min) + estimated_range
+    if not np.isfinite(candidate_max) or not 0.5 <= candidate_max <= 50.0:
+        return float(x_max)
+
+    common_scales = np.asarray([1, 2, 3, 4, 5, 6, 8, 10, 20, 50], dtype=float)
+    snapped = float(common_scales[np.argmin(np.abs(common_scales - candidate_max))])
+
+    # Require the independent estimate to be reasonably close to a standard
+    # scale. This avoids changing the axis when the green trace continues well
+    # beyond the actual rupture point or when elongation OCR is unreliable.
+    if abs(snapped - candidate_max) > 0.22 * max(snapped, 1.0):
+        return float(x_max)
+
+    # Do not perturb an already consistent OCR result.
+    if abs(snapped - float(x_max)) <= 0.16 * max(float(x_max), 1.0):
+        return float(x_max)
+
+    # The displayed elongation should lie inside the proposed graph range.
+    if not (x_min <= elongation <= snapped * 0.98):
+        return float(x_max)
+
+    return snapped
+
+
 def analyze_rectified(rectified_bgr: np.ndarray) -> AnalysisResult:
     boxes = find_top_result_boxes(rectified_bgr)
     elong_box = boxes[1]
@@ -2090,6 +2144,18 @@ def analyze_rectified(rectified_bgr: np.ndarray) -> AnalysisResult:
         decimal_places=2,
         expected_integer_digits=2,
     )
+
+    # OCR of the small X-axis tick labels can occasionally fall back to the
+    # default 0..5 mm range. Cross-check it against the independently detected
+    # curve-end position and the instrument elongation box. When this indicates
+    # another standard scale, re-extract the curve with the corrected range.
+    refined_xmax = refine_x_axis_from_elongation(
+        xmin, xmax, break_x_est, elong
+    )
+    if refined_xmax != xmax:
+        xmax = refined_xmax
+        curve = extract_green_curve(rectified_bgr, graph, xmin, xmax, ymin, ymax)
+        break_x_est, max_y_est = curve_break_estimates(curve)
 
     # Last-resort fallbacks. These are less exact than the display values, but
     # avoid nonsensical OCR such as 198222 or 2.7.

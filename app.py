@@ -27,7 +27,7 @@ SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = int(os.environ.get("YDL_MAX_UPLOAD_BYTES", str(30 * 1024 * 1024)))
 SESSION_TTL_SECONDS = int(os.environ.get("YDL_SESSION_TTL_SECONDS", str(8 * 3600)))
 
-app = FastAPI(title="YDL-7003-P data analyzer", version="1.7")
+app = FastAPI(title="YDL-7003-P data analyzer", version="1.8")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
 
 _sessions: dict[str, dict[str, Any]] = {}

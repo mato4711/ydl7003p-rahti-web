@@ -175,3 +175,21 @@ This protection is activated only when a user manually moves a graph corner.
   provisional state.
 - The backend also rejects direct export requests while manually adjusted graph
   corners await axis confirmation.
+
+
+## Version 13 regression fixes
+
+- A compliant newly selected image always switches to Corrected screen after
+  analysis.
+- Hidden tab canvases are no longer resized to 1 × 1 pixels. They are drawn
+  after the selected tab is visible.
+- The corrected-screen image falls back to the clean rectified image if the
+  annotated image cannot be loaded or is unexpectedly blank/dark.
+- Image objects are reset for every newly selected photograph so stale display
+  data cannot leak from the previous session.
+- Provisional-result protection remains limited to an actual manual graph-corner
+  movement.
+- X-axis OCR is cross-checked against the independently detected green-curve
+  endpoint and the recognized instrument elongation. A clearly inconsistent
+  default/incorrect X maximum is replaced only when the independent estimate
+  agrees with a standard instrument scale.
