@@ -393,6 +393,8 @@ async function applyResponse(data, options={}) {
   $("grammage").value = data.settings.grammage_g_m2 ?? "";
   $("elongation").value = data.result.elongation ?? "";
   $("maxForce").value = data.result.max_force ?? "";
+  $("ruptureMode").value = data.result.rupture_mode || "auto";
+  $("terminalExtension").value = data.result.manual_terminal_extension ?? "";
 
   if (setDateTimeInputs(data.result.test_datetime)) {
     $("datetimeHint").textContent =
@@ -505,24 +507,46 @@ function showResults(r, settings={}) {
     ? "not calculated (thickness not provided)"
     : `${f(r.elastic_modulus_mpa,3)} MPa`;
 
+  const outcomes = {
+    clear_rupture:"Clear rupture (automatic heuristic)",
+    confirmed_rupture:"Complete rupture (operator confirmed)",
+    no_rupture:"No complete rupture (operator confirmed)",
+    no_clear_rupture:"No clear rupture within analysed range",
+    uncertain:"Uncertain - review test outcome and endpoint"
+  };
+  const stressText = settings.thickness_um == null
+    ? "not calculated (thickness not provided)"
+    : `${f(r.maximum_stress_mpa,3)} MPa`;
   $("results").textContent =
 `Test date and time: ${r.test_datetime || "Not detected"}
+Outcome: ${outcomes[r.rupture_status] || "Uncertain"}
 
 Instrument extension: ${f(r.elongation)} mm
-Instrument strain: ${f(r.elongation_text_percent)} %
-Curve break extension${manual}: ${f(r.elongation_data)} mm
-Curve strain at break${manual}: ${f(r.elongation_data_percent)} %
+Instrument maximum force: ${f(r.max_force)} N
+Curve maximum force: ${f(r.max_force_data,3)} N
+Maximum engineering stress: ${stressText}
+Extension at maximum force: ${f(r.peak_extension_mm,3)} mm
+Strain at maximum force: ${f(r.peak_strain_percent,3)} %
 
-Instrument max force: ${f(r.max_force)} N
-Curve maximum force: ${f(r.max_force_data)} N
-
-Initial slope: ${f(r.elastic_slope_n_per_mm,3)} N/mm
+Initial stiffness: ${f(r.elastic_slope_n_per_mm,3)} N/mm
 Fit R²: ${f(r.modulus_r2,4)}
 Tensile stiffness: ${f(r.tensile_stiffness_kn_per_m,3)} kN/m
 Stiffness index: ${stiffnessIndexText}
-Tensile modulus: ${modulusText}
+Apparent tensile modulus: ${modulusText}
 
-Tensile energy: ${f(r.toughness_n_mm,3)} N·mm (${f(r.toughness_mj,3)} mJ)
+Terminal extension: ${f(r.terminal_extension_mm,3)} mm
+Terminal strain: ${f(r.terminal_strain_percent,3)} %
+Force at terminal point: ${f(r.terminal_force_n,3)} N
+Residual load / peak load: ${f(r.residual_load_ratio == null ? null : 100*r.residual_load_ratio,2)} %
+Endpoint source: ${r.terminal_source || "—"}
+
+Work to peak load: ${f(r.work_to_peak_n_mm,3)} N·mm
+Post-peak work: ${f(r.post_peak_energy_n_mm,3)} N·mm
+Work to terminal point: ${f(r.work_to_terminal_n_mm,3)} N·mm
+1 N·mm = 1 mJ
+
+Break extension${manual}: ${f(r.elongation_data,3)} mm
+Strain at break${manual}: ${f(r.elongation_data_percent,3)} %
 Curve points: ${r.curve_points}
 ${r.mechanical_note ? "\nNote: " + r.mechanical_note : ""}`;
 }
@@ -967,6 +991,10 @@ $("reextractBtn").onclick = async () => {
   }
 };
 $("updateCalcBtn").onclick = () => update({});
+$("outcomeBtn").onclick = () => update({
+  rupture_mode:$("ruptureMode").value,
+  manual_terminal_extension:$("terminalExtension").value || null
+});
 $("editedBtn").onclick = () => update({
   elongation:num("elongation",null),
   max_force:num("maxForce",null)
@@ -1010,7 +1038,7 @@ $("analysisCanvas").addEventListener("click", async event => {
   if (
     resultsProvisional ||
     !event.ctrlKey || event.button !== 0 ||
-    !session || !analysisMeta?.plot
+    !session || session.result.rupture_mode === "no_rupture" || !analysisMeta?.plot
   ) return;
 
   event.preventDefault();

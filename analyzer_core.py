@@ -11,7 +11,7 @@ Features
 * Shows the perspective-corrected screen as the main view; the original/corner editor opens on demand.
 * Finds the Elong. and Maximum force result boxes and reads their values with a trained template matcher.
 * Finds the force/elongation graph, estimates axis limits, and digitizes the green curve.
-* Calculates break elongation, maximum force, elastic slope/modulus, and toughness.
+* Classifies rupture and calculates peak, terminal, modulus and work metrics.
 * Draws a separate analysis graph: Force vs. elongation %, with the elastic fit line,
   break elongation markers, and a compact results table.
 * Exports the perspective-corrected screen, curve CSV, a valid multi-sheet Excel .xlsx report, and a PDF report.
@@ -306,6 +306,21 @@ class AnalysisResult:
     test_datetime_source: str = ""
     manual_break_extension: Optional[float] = None
     break_is_manual: bool = False
+    rupture_mode: str = "auto"
+    manual_terminal_extension: Optional[float] = None
+    rupture_status: str = "uncertain"
+    rupture_note: str = ""
+    peak_extension_mm: Optional[float] = None
+    peak_strain_percent: Optional[float] = None
+    maximum_stress_mpa: Optional[float] = None
+    terminal_extension_mm: Optional[float] = None
+    terminal_strain_percent: Optional[float] = None
+    terminal_force_n: Optional[float] = None
+    terminal_source: str = ""
+    residual_load_ratio: Optional[float] = None
+    work_to_peak_n_mm: Optional[float] = None
+    post_peak_energy_n_mm: Optional[float] = None
+    work_to_terminal_n_mm: Optional[float] = None
 
 
 # ----------------------------- Image utilities ----------------------------- #
@@ -1706,14 +1721,26 @@ def estimate_axis_limits(rectified_bgr: np.ndarray, plot: Rect) -> tuple[float,f
     # Y labels: strip left of plot.
     yb = Rect(max(0, plot.x1-int(.075*w)), plot.y1, plot.x1, plot.y2).clip(w,h)
     yt = tesseract_tokens(rectified_bgr[yb.as_slice()], psm=6)
-    # Y-axis labels on this instrument are zero or multiples of 10. Reject
-    # isolated low OCR artefacts such as "4", which otherwise can turn a
-    # 0..120 N axis into an implausible 0..12 N axis.
-    yvals = [
+    # Support 1-N labels only with consistent multiple-label evidence; otherwise
+    # retain the standard multiples-of-10 filter against isolated OCR artifacts.
+    all_yvals = [
         (yb.y1+y, val)
         for _, y, val, conf, _ in yt
         if conf >= 0 and 0 <= val <= 10000
-        and (abs(val) < 1e-9 or (val >= 10 and abs(val/10.0 - round(val/10.0)) <= 0.16))
+        and abs(val - round(val)) <= 0.10
+    ]
+    # Low-force tests use 0..12 N with 1-N grid labels. Accept that scale
+    # only when at least three distinct low labels support a linear axis.
+    low_labels = [(p, v) for p, v in all_yvals if 0 <= v <= 15]
+    low_supported = False
+    if len(set(v for _, v in low_labels)) >= 3:
+        pp, vv = np.asarray(low_labels, float).T
+        a, b = np.polyfit(pp, vv, 1)
+        residual = np.max(np.abs(vv - (a * pp + b)))
+        low_supported = a < 0 and residual < 0.35
+    yvals = low_labels if low_supported else [
+        (p, v) for p, v in all_yvals
+        if abs(v) < 1e-9 or (v >= 10 and abs(v/10.0 - round(v/10.0)) <= 0.16)
     ]
     if len(yvals) >= 2:
         py = np.array([p for p,v in yvals], float)
@@ -1737,8 +1764,8 @@ def estimate_axis_limits(rectified_bgr: np.ndarray, plot: Rect) -> tuple[float,f
 
     x_min = 0.0 if abs(x_min) < .5 else x_min
     y_min = 0.0 if abs(y_min) < 5 else y_min
-    x_max = snap(x_max, [1,2,3,4,5,6,8,10,20,50])
-    y_max = snap(y_max, [10,20,30,40,50,60,80,100,120,150,200,500,1000])
+    x_max = snap(x_max, [1,2,3,4,5,6,8,10,20,25,50])
+    y_max = snap(y_max, [1,2,3,4,5,6,8,10,12,15,20,30,40,50,60,80,100,120,150,200,500,1000])
     return x_min, x_max, y_min, y_max
 
 
@@ -1852,65 +1879,55 @@ def prepare_curve_for_mechanics(curve: Optional[np.ndarray]) -> np.ndarray:
     return arr
 
 
-def detect_break_index_from_force_drop(x: np.ndarray, y: np.ndarray,
-                                       text_break_x: Optional[float],
-                                       peak_force: float) -> tuple[int, str]:
-    """Detect rupture from a sustained abrupt force drop.
+def classify_rupture(x: np.ndarray, y: np.ndarray,
+                     instrument_endpoint: Optional[float] = None
+                     ) -> tuple[str, Optional[int], Optional[int], str]:
+    """Image-only heuristic, not proof of physical fracture.
 
-    Returns the index immediately before the drop. If no sustained drop is
-    found, falls back to the last point above a small force threshold.
+    Clear rupture requires a rapid >=50%-of-peak drop to <=5%-of-peak,
+    a sustained low tail, and separation from a known stopping extension.
+    A smaller terminal drop is retained as possible unloading, never rupture.
+    Returns status, clear-break index, possible-unloading index, explanation.
+    Thresholds are relative so low-force specimens remain analysable.
     """
-    n = len(x)
-    if n < 5 or not np.isfinite(peak_force) or peak_force <= 0:
-        return max(0, n - 1), "break-extension fallback: last point"
-    peak_idx = int(np.nanargmax(y))
-    window = max(3, min(12, n // 35))
-    min_drop = max(3.0, 0.12 * peak_force)
-    start = max(1, peak_idx)
-    candidates: list[tuple[int, float, float]] = []
-    for i in range(start, max(start, n - window - 1)):
-        if y[i] < 0.45 * peak_force:
+    peak = float(np.max(y))
+    ip = int(np.argmax(y))
+    span = max(float(x[-1] - x[0]), 1e-9)
+    dx = float(np.median(np.diff(x)))
+    low = 0.05 * peak
+    window = max(3 * dx, 0.035 * span)
+    endpoint_tol = max(4 * dx, 0.04 * span)
+    for i in range(ip, len(x) - 3):
+        if y[i] < 0.15 * peak:
             continue
-        future = y[i + 1:i + 1 + window]
-        if len(future) < 2:
+        j = int(np.searchsorted(x, x[i] + window, side="right"))
+        future = np.flatnonzero(y[i+1:j] <= low)
+        if not len(future):
             continue
-        drop = float(y[i] - np.nanmin(future))
-        if drop >= min_drop:
-            # Require the drop to persist for at least half the look-ahead window.
-            if np.count_nonzero(future <= y[i] - 0.65 * min_drop) >= max(1, window // 2):
-                score = drop / peak_force
-                if text_break_x is not None and text_break_x > 0:
-                    score -= 0.35 * abs(float(x[i]) - text_break_x) / max(text_break_x, 1e-9)
-                candidates.append((i, score, drop))
-    if candidates:
-        # Prefer a candidate near the text-box elongation if available; otherwise
-        # use the strongest sustained drop.
-        if text_break_x is not None and text_break_x > 0:
-            close = [c for c in candidates if abs(float(x[c[0]]) - text_break_x) <= max(0.25, 0.20 * text_break_x)]
-            if close:
-                i, _score, drop = max(close, key=lambda c: c[1])
-                return int(i), f"break extension: sustained force drop ({drop:.2g} N), constrained near text-box value"
-        i, _score, drop = max(candidates, key=lambda c: c[1])
-        return int(i), f"break extension: sustained force drop ({drop:.2g} N)"
+        k = i + 1 + int(future[0])
+        edge = i + int(np.argmin(np.diff(y[i:k+1])))
+        # Low load must persist; reject transient dips and recoveries.
+        tail = y[k:]
+        if len(tail) < 3 or np.quantile(tail, 0.9) > 0.08 * peak:
+            continue
+        near_stop = (instrument_endpoint is not None
+                     and abs(x[k] - instrument_endpoint) <= endpoint_tol)
+        near_end = x[-1] - x[k] <= endpoint_tol
+        if y[i] >= 0.5 * peak and not near_stop and not near_end:
+            return "clear_rupture", edge, None, "Rapid large force drop with a sustained near-zero tail away from the endpoint."
+        return "uncertain", None, edge, "Terminal drop may be stopping/unloading; physical rupture needs operator confirmation."
+    tail = float(np.median(y[-min(5, len(y)):]))
+    if tail > 0.08 * peak:
+        return "no_clear_rupture", None, None, "Positive residual load; no clear rupture within the analysed range."
+    return "uncertain", None, None, "Near-zero tail without a clear abrupt rupture; confirm the observed test outcome."
 
-    # Derivative fallback: a large negative slope after peak.
-    dx = np.diff(x)
-    dy = np.diff(y)
-    valid = dx > max(1e-6, 0.002 * max(float(x[-1] - x[0]), 1e-9))
-    if np.any(valid):
-        deriv = np.full_like(dy, np.nan, dtype=float)
-        deriv[valid] = dy[valid] / dx[valid]
-        search = np.arange(max(peak_idx, 1), n - 1)
-        if len(search):
-            j = int(search[np.nanargmin(deriv[search])])
-            if np.isfinite(deriv[j]) and dy[j] <= -max(2.0, 0.07 * peak_force):
-                return max(0, j), "break extension: steepest negative force derivative"
 
-    threshold = max(2.0, 0.08 * peak_force)
-    valid_idx = np.flatnonzero(y >= threshold)
-    if len(valid_idx):
-        return int(valid_idx[-1]), "break-extension fallback: last point above force threshold"
-    return n - 1, "break-extension fallback: last extracted point"
+def bounded_curve(curve: np.ndarray, end: float) -> np.ndarray:
+    """Include an interpolated endpoint without extrapolation."""
+    end = float(np.clip(end, curve[0, 0], curve[-1, 0]))
+    part = curve[curve[:, 0] < end]
+    endpoint = np.array([[end, float(np.interp(end, curve[:, 0], curve[:, 1]))]])
+    return np.vstack([part, endpoint])
 
 
 def calculate_mechanical_properties(result: AnalysisResult,
@@ -1927,91 +1944,150 @@ def calculate_mechanical_properties(result: AnalysisResult,
     a true Young's modulus in MPa is also calculated as
     slope * gauge_length / (width * thickness).
     """
-    manual_break_extension = result.manual_break_extension
+    for name in (
+        "elongation_data", "max_force_data", "elongation_text_percent",
+        "elongation_data_percent", "elastic_slope_n_per_mm", "tensile_stiffness_kn_per_m",
+        "tensile_stiffness_index_knm_per_kg", "elastic_modulus_mpa", "modulus_r2",
+        "modulus_line", "break_line_x", "toughness_n_mm", "toughness_mj",
+        "peak_extension_mm", "peak_strain_percent", "maximum_stress_mpa",
+        "terminal_extension_mm", "terminal_strain_percent", "terminal_force_n",
+        "residual_load_ratio", "work_to_peak_n_mm", "post_peak_energy_n_mm",
+        "work_to_terminal_n_mm",
+    ):
+        setattr(result, name, None)
     result.break_is_manual = False
-    result.elongation_data = None
-    result.max_force_data = None
-    result.elongation_text_percent = None
-    result.elongation_data_percent = None
-    result.elastic_slope_n_per_mm = None
-    result.tensile_stiffness_kn_per_m = None
-    result.tensile_stiffness_index_knm_per_kg = None
-    result.elastic_modulus_mpa = None
-    result.modulus_r2 = None
-    result.modulus_line = None
-    result.break_line_x = None
-    result.toughness_n_mm = None
-    result.toughness_mj = None
+    result.rupture_status = "uncertain"
+    result.rupture_note = ""
+    result.terminal_source = ""
     result.mechanical_note = ""
-
     curve = prepare_curve_for_mechanics(result.curve_xy)
     if len(curve) < 8:
         result.mechanical_note = "Too few curve points for mechanical calculations."
         return
-
-    x = curve[:, 0].astype(float)
-    y_raw = curve[:, 1].astype(float)
-    y = _median_smooth_1d(y_raw, 5)
-    peak_force = float(np.nanmax(y))
-    if not np.isfinite(peak_force) or peak_force <= 0:
-        result.mechanical_note = "No positive force values found."
+    if gauge_length_mm <= 0 or sample_width_mm <= 0:
+        result.mechanical_note = "Gauge length and width must be positive."
         return
 
-    result.max_force_data = float(np.nanmax(y_raw))
-    auto_break_idx, break_note = detect_break_index_from_force_drop(
-        x, y, result.elongation, peak_force
+    instrument_end = result.elongation
+    valid_instrument_end = (
+        instrument_end is not None and np.isfinite(instrument_end)
+        and curve[0, 0] < instrument_end <= curve[-1, 0]
+        and result.elongation_source != "curve fallback"
     )
-
-    use_manual_break = (
-        manual_break_extension is not None
-        and np.isfinite(manual_break_extension)
-        and float(x[0]) <= float(manual_break_extension) <= float(x[-1])
+    # Exclude a screen baseline extending beyond the recorded test extension.
+    if valid_instrument_end:
+        curve = bounded_curve(curve, instrument_end)
+    if len(curve) < 8:
+        result.mechanical_note = "Too few points before the instrument endpoint; verify axis calibration."
+        return
+    x, y_raw = curve[:, 0], curve[:, 1]
+    y = _median_smooth_1d(y_raw, 5)
+    peak_force = float(np.max(y))
+    if peak_force <= 0:
+        result.mechanical_note = "No positive force values found."
+        return
+    status, break_idx, unload_idx, note = classify_rupture(
+        x, y, instrument_end if valid_instrument_end else None
     )
-    if use_manual_break:
-        break_idx = int(np.nanargmin(np.abs(x - float(manual_break_extension))))
-        result.elongation_data = float(x[break_idx])
-        result.manual_break_extension = result.elongation_data
-        result.break_is_manual = True
-        result.mechanical_note = "break extension manually selected"
-    else:
-        break_idx = auto_break_idx
-        result.elongation_data = float(x[break_idx])
-        result.break_is_manual = False
-        result.mechanical_note = break_note
-    result.break_line_x = result.elongation_data
+    terminal = float(x[-1])
+    result.terminal_source = "instrument endpoint" if valid_instrument_end else "last extracted point"
+    mode = result.rupture_mode
+    if mode == "no_rupture":
+        status, break_idx = "no_rupture", None
+        note = "Operator confirmed no complete rupture (manual stop/extension limit)."
+        if unload_idx is not None:
+            terminal = float(x[unload_idx])
+            result.terminal_source = "estimated last loaded point before terminal unloading; verify endpoint"
+    elif mode == "rupture":
+        status = "confirmed_rupture"
+        note = "Operator confirmed complete rupture."
+        if break_idx is None:
+            break_idx = unload_idx if unload_idx is not None else len(x) - 1
+            note += " Select a manual break extension if the endpoint is not the fracture location."
+    if result.manual_terminal_extension is not None:
+        terminal = float(result.manual_terminal_extension)
+        if not x[0] < terminal <= x[-1]:
+            result.mechanical_note = "Terminal extension is outside the extracted/recorded test range."
+            return
+        result.terminal_source = "user-selected terminal extension"
+        # Do not let a later excluded event determine automatic rupture status.
+        if mode == "auto":
+            check = bounded_curve(curve, terminal)
+            status, break_idx, unload_idx, note = classify_rupture(
+                check[:, 0], _median_smooth_1d(check[:, 1], 5), terminal
+            )
+    elif status == "uncertain" and unload_idx is not None:
+        terminal = float(x[unload_idx])
+        result.terminal_source = "estimated last loaded point before terminal drop; verify endpoint"
 
-    if gauge_length_mm and gauge_length_mm > 0:
-        if result.elongation is not None:
-            result.elongation_text_percent = 100.0 * result.elongation / gauge_length_mm
-        if result.elongation_data is not None:
-            result.elongation_data_percent = 100.0 * result.elongation_data / gauge_length_mm
+    if result.manual_break_extension is not None and mode != "no_rupture":
+        manual = float(result.manual_break_extension)
+        if x[0] <= manual <= x[-1]:
+            status = "confirmed_rupture"
+            terminal = manual
+            result.break_is_manual = True
+            note = "Operator-selected break extension (manual)."
+            result.terminal_source = "manual break extension"
+        else:
+            result.mechanical_note = "Manual break extension is outside the extracted range."
+            return
+    elif break_idx is not None and status in {"clear_rupture", "confirmed_rupture"}:
+        terminal = float(x[break_idx])
+        result.terminal_source = "pre-drop rupture point"
 
-    end_mask = x <= result.elongation_data + 1e-9
-    xi = x[end_mask]
-    yi = np.maximum(y_raw[end_mask], 0.0)
-    if len(xi) >= 2:
-        if xi[0] > 1e-6:
-            xi = np.insert(xi, 0, 0.0)
-            yi = np.insert(yi, 0, 0.0)
-        result.toughness_n_mm = float(trapezoid_integral(yi, xi))
-        result.toughness_mj = result.toughness_n_mm  # 1 N·mm = 1 mJ
+    result.rupture_status = status
+    result.rupture_note = note
+    result.mechanical_note = note + " Endpoint: " + result.terminal_source + "."
+    if result.elongation is not None and result.elongation > curve[-1, 0] + 2 * np.median(np.diff(curve[:, 0])):
+        result.mechanical_note += " Extracted curve ends before displayed extension; verify axes/corners."
+    measured = bounded_curve(curve, terminal)
+    if len(measured) < 3:
+        result.mechanical_note += " Too few loaded points."
+        return
+    x, y_raw = measured[:, 0], measured[:, 1]
+    y = _median_smooth_1d(y_raw, 5)
+    peak_idx = int(np.argmax(y_raw))
+    result.max_force_data = float(y_raw[peak_idx])
+    peak_force = result.max_force_data
+    result.peak_extension_mm = float(x[peak_idx])
+    result.peak_strain_percent = 100.0 * x[peak_idx] / gauge_length_mm
+    result.terminal_extension_mm = terminal
+    result.terminal_strain_percent = 100.0 * terminal / gauge_length_mm
+    result.terminal_force_n = float(y_raw[-1])
+    result.residual_load_ratio = result.terminal_force_n / peak_force
+    if result.elongation is not None:
+        result.elongation_text_percent = 100.0 * result.elongation / gauge_length_mm
+    if status in {"clear_rupture", "confirmed_rupture"}:
+        result.elongation_data = terminal
+        result.elongation_data_percent = result.terminal_strain_percent
+        result.break_line_x = terminal
+    if thickness_um is not None and thickness_um > 0:
+        result.maximum_stress_mpa = peak_force / (sample_width_mm * thickness_um / 1000.0)
+    # Integrate the measured interval only; never invent a missing initial segment.
+    result.work_to_peak_n_mm = float(trapezoid_integral(y_raw[:peak_idx+1], x[:peak_idx+1]))
+    result.post_peak_energy_n_mm = float(trapezoid_integral(y_raw[peak_idx:], x[peak_idx:]))
+    result.work_to_terminal_n_mm = result.work_to_peak_n_mm + result.post_peak_energy_n_mm
+    if status in {"clear_rupture", "confirmed_rupture"}:
+        result.toughness_n_mm = result.work_to_terminal_n_mm
+        result.toughness_mj = result.work_to_terminal_n_mm
+    if x[0] > 1e-6:
+        result.mechanical_note += " Work covers extracted points only; initial unrecorded work is excluded."
 
-    x_break = max(float(result.elongation_data or x[-1]), 1e-9)
+    # Fit only the rising pre-peak region: post-peak reloading cannot define modulus.
+    x_break = max(float(x[peak_idx] - x[0]), 1e-9)
     candidate = np.flatnonzero(
-        (x <= 0.70 * x_break) &
-        (y >= 0.08 * peak_force) &
-        (y <= 0.60 * peak_force)
+        (np.arange(len(x)) <= peak_idx) &
+        (y >= 0.08 * peak_force) & (y <= 0.60 * peak_force)
     )
-    if len(candidate) < 8:
+    if len(candidate) < 4:
         candidate = np.flatnonzero(
-            (x <= 0.80 * x_break) &
-            (y >= 0.04 * peak_force) &
-            (y <= 0.70 * peak_force)
+            (np.arange(len(x)) <= peak_idx) &
+            (y >= 0.04 * peak_force) & (y <= 0.70 * peak_force)
         )
 
     best = None
-    if len(candidate) >= 8:
-        min_pts = max(8, min(30, len(candidate) // 4 if len(candidate) >= 32 else 8))
+    if len(candidate) >= 4:
+        min_pts = max(4, min(30, len(candidate) // 4 if len(candidate) >= 32 else 4))
         possible_lengths = sorted(set([min_pts, min_pts * 2, min_pts * 3, min(len(candidate), max(min_pts, 45))]))
         step = max(1, min_pts // 3)
         for npts in possible_lengths:
@@ -2019,6 +2095,8 @@ def calculate_mechanical_properties(result: AnalysisResult,
                 continue
             for start in range(0, len(candidate) - npts + 1, step):
                 idx = candidate[start:start+npts]
+                if np.any(np.diff(idx) != 1):
+                    continue
                 xx = x[idx]
                 yy = y[idx]
                 if xx[-1] - xx[0] < max(0.025 * x_break, 0.015):
@@ -2033,6 +2111,8 @@ def calculate_mechanical_properties(result: AnalysisResult,
                 ss_res = float(np.sum((yy - pred) ** 2))
                 ss_tot = float(np.sum((yy - np.mean(yy)) ** 2))
                 r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0
+                if r2 < 0.95:
+                    continue
                 intercept_penalty = min(0.5, abs(b) / max(peak_force, 1e-9))
                 late_penalty = 0.08 * float(np.mean(xx) / x_break)
                 width_bonus = min(0.08, 0.20 * float((xx[-1] - xx[0]) / x_break))
@@ -2049,6 +2129,8 @@ def calculate_mechanical_properties(result: AnalysisResult,
         y1 = float(slope * x1 + intercept)
         y2 = float(slope * x2 + intercept)
         result.modulus_line = (x1, y1, x2, y2)
+        if i2 - i1 + 1 < 8:
+            result.mechanical_note += " Modulus estimate uses fewer than eight image points; limited resolution."
         if gauge_length_mm > 0 and sample_width_mm > 0:
             result.tensile_stiffness_kn_per_m = slope * gauge_length_mm / sample_width_mm
             if grammage_g_m2 is not None and grammage_g_m2 > 0:
@@ -2096,7 +2178,7 @@ def refine_x_axis_from_elongation(
     if not np.isfinite(candidate_max) or not 0.5 <= candidate_max <= 50.0:
         return float(x_max)
 
-    common_scales = np.asarray([1, 2, 3, 4, 5, 6, 8, 10, 20, 50], dtype=float)
+    common_scales = np.asarray([1, 2, 3, 4, 5, 6, 8, 10, 20, 25, 50], dtype=float)
     snapped = float(common_scales[np.argmin(np.abs(common_scales - candidate_max))])
 
     # Require the independent estimate to be reasonably close to a standard
@@ -2362,13 +2444,49 @@ def _draw_dashed_line_pil(draw: ImageDraw.ImageDraw, xy1: tuple[int, int], xy2: 
         draw.line((x1, y1, x2, y2), fill=fill, width=width)
 
 
+RUPTURE_LABELS = {
+    "clear_rupture": "Clear rupture (automatic)",
+    "confirmed_rupture": "Rupture (operator confirmed)",
+    "no_rupture": "No rupture (operator confirmed)",
+    "no_clear_rupture": "No clear rupture",
+    "uncertain": "Uncertain - review test",
+}
+
+
+def mechanical_report_rows(result: AnalysisResult) -> list[tuple]:
+    """Canonical scientific results, shared by raster report and spreadsheet."""
+    return [
+        ("Test outcome", RUPTURE_LABELS.get(result.rupture_status, "Uncertain"), ""),
+        ("Instrument extension", result.elongation, "mm"),
+        ("Instrument maximum force", result.max_force, "N"),
+        ("Curve maximum force", result.max_force_data, "N"),
+        ("Maximum engineering stress", result.maximum_stress_mpa, "MPa"),
+        ("Extension at maximum force", result.peak_extension_mm, "mm"),
+        ("Strain at maximum force", result.peak_strain_percent, "%"),
+        ("Initial stiffness", result.elastic_slope_n_per_mm, "N/mm"),
+        ("Modulus fit R²", result.modulus_r2, ""),
+        ("Tensile stiffness", result.tensile_stiffness_kn_per_m, "kN/m"),
+        ("Tensile stiffness index", result.tensile_stiffness_index_knm_per_kg, "kN·m/kg"),
+        ("Apparent tensile modulus", result.elastic_modulus_mpa, "MPa"),
+        ("Terminal extension", result.terminal_extension_mm, "mm"),
+        ("Terminal strain", result.terminal_strain_percent, "%"),
+        ("Force at terminal point", result.terminal_force_n, "N"),
+        ("Residual load / peak load", None if result.residual_load_ratio is None else 100 * result.residual_load_ratio, "%"),
+        ("Work to maximum force", result.work_to_peak_n_mm, "N·mm"),
+        ("Post-peak work", result.post_peak_energy_n_mm, "N·mm"),
+        ("Work to terminal point", result.work_to_terminal_n_mm, "N·mm"),
+        ("Extension at break", result.elongation_data, "mm"),
+        ("Strain at break", result.elongation_data_percent, "%"),
+    ]
+
+
 def draw_analysis_graph(result: AnalysisResult,
                         gauge_length_mm: float = 50.0,
                         sample_width_mm: float = 15.0,
                         thickness_um: Optional[float] = None,
                         grammage_g_m2: Optional[float] = 100.0,
-                        width: int = 1500,
-                        height: int = 860) -> tuple[np.ndarray, dict]:
+                        width: int = 1700,
+                        height: int = 1100) -> tuple[np.ndarray, dict]:
     """Create a clean generated Force-vs-tensile-strain graph using TrueType fonts."""
     image = Image.new("RGB", (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(image)
@@ -2385,11 +2503,13 @@ def draw_analysis_graph(result: AnalysisResult,
 
     margin_left, margin_right = 105, 42
     margin_top, margin_bottom = 205, 92
-    table_w = 430
+    table_w = 550
     plot = Rect(margin_left, margin_top, width - margin_right - table_w - 30, height - margin_bottom)
     table = Rect(plot.x2 + 26, margin_top, width - margin_right, plot.y2)
 
     curve = prepare_curve_for_mechanics(result.curve_xy)
+    if len(curve) and result.terminal_extension_mm is not None:
+        curve = bounded_curve(curve, result.terminal_extension_mm)
     if gauge_length_mm <= 0:
         gauge_length_mm = 50.0
     if len(curve) >= 2:
@@ -2426,7 +2546,7 @@ def draw_analysis_graph(result: AnalysisResult,
         force_candidates.append(float(result.max_force_data))
     peak_for_axis = max(force_candidates) if force_candidates else 120.0
     raw_y_max = max(1.0, peak_for_axis * 1.30)
-    y_step_nice = 5.0 if raw_y_max <= 80 else 10.0 if raw_y_max <= 200 else 20.0
+    y_step_nice = 0.25 if raw_y_max <= 2 else 0.5 if raw_y_max <= 5 else 1.0 if raw_y_max <= 10 else 5.0 if raw_y_max <= 80 else 10.0 if raw_y_max <= 200 else 20.0
     y_min = 0.0
     y_max = float(math.ceil(raw_y_max / y_step_nice) * y_step_nice)
 
@@ -2467,7 +2587,7 @@ def draw_analysis_graph(result: AnalysisResult,
         x_step = 20.0
     else:
         x_step = 50.0
-    y_step = 10.0 if y_max <= 120 else 20.0 if y_max <= 240 else 50.0
+    y_step = 0.2 if y_max <= 2 else 0.5 if y_max <= 5 else 1.0 if y_max <= 10 else 10.0 if y_max <= 120 else 20.0 if y_max <= 240 else 50.0
     minor_x = x_step / 2.0
     minor_y = y_step / 2.0
 
@@ -2576,6 +2696,14 @@ def draw_analysis_graph(result: AnalysisResult,
             _draw_dashed_line_pil(draw, (xpix, plot.y1), (xpix, plot.y2), fill=(30, 150, 60), width=2)
             draw.text((xpix + 8, plot.y1 + 44), "instrument extension", font=small_font, fill=(25, 125, 45))
 
+    if result.terminal_strain_percent is not None and result.elongation_data_percent is None:
+        tx = px(result.terminal_strain_percent)
+        _draw_dashed_line_pil(draw, (tx, plot.y1), (tx, plot.y2), fill=(150, 70, 150), width=2)
+        draw.text((min(tx + 8, plot.x2 - 160), plot.y1 + 18), "terminal point", font=small_bold, fill=(150, 70, 150))
+    if result.peak_strain_percent is not None and result.max_force_data is not None:
+        cx, cy = px(result.peak_strain_percent), py(result.max_force_data)
+        draw.ellipse((cx-5, cy-5, cx+5, cy+5), fill=(210, 60, 50))
+
     # Results table
     draw.rectangle((table.x1, table.y1, table.x2, table.y2), fill=(248, 250, 252), outline=(130, 130, 130), width=1)
     draw.rectangle((table.x1, table.y1, table.x2, table.y1 + 42), fill=(232, 240, 247), outline=(130, 130, 130), width=1)
@@ -2592,47 +2720,16 @@ def draw_analysis_graph(result: AnalysisResult,
         return f"{v:.{nd}f}"
 
     rows = [
-        ("Instrument extension", f"{fmt_fixed_graph(result.elongation)} mm"),
-        ("Instrument strain", f"{fmt_fixed_graph(result.elongation_text_percent)} %"),
-        (
-            "Curve break extension",
-            f"{fmt_fixed_graph(result.elongation_data)} mm"
-            + (" (manual)" if result.break_is_manual else "")
-        ),
-        (
-            "Curve strain at break",
-            f"{fmt_fixed_graph(result.elongation_data_percent)} %"
-            + (" (manual)" if result.break_is_manual else "")
-        ),
-        ("Instrument max force", f"{fmt_fixed_graph(result.max_force)} N"),
-        ("Curve maximum force", f"{fmt_fixed_graph(result.max_force_data)} N"),
-        ("Initial slope", f"{fmtv(result.elastic_slope_n_per_mm)} N/mm"),
-        ("Fit R²", fmtv(result.modulus_r2, 4)),
-        ("Tensile stiffness", f"{fmtv(result.tensile_stiffness_kn_per_m)} kN/m"),
-        (
-            "Stiffness index",
-            (
-                f"{fmtv(result.tensile_stiffness_index_knm_per_kg)} kN·m/kg"
-                if grammage_g_m2 is not None and grammage_g_m2 > 0
-                else "not calculated (no grammage)"
-            ),
-        ),
-        (
-            "Tensile modulus",
-            (
-                f"{fmtv(result.elastic_modulus_mpa)} MPa"
-                if thickness_um is not None and thickness_um > 0
-                else "not calculated (no thickness)"
-            ),
-        ),
-        ("Tensile energy", f"{fmtv(result.toughness_n_mm)} N·mm ({fmtv(result.toughness_mj)} mJ)"),
+        (name, value if isinstance(value, str) else
+         ("not available" if value is None else f"{fmtv(value, 4)} {unit}".strip()))
+        for name, value, unit in mechanical_report_rows(result)
     ]
     yrow = table.y1 + 58
-    row_h = 31
+    row_h = 29
     for name, value in rows:
         draw.line((table.x1, yrow - 10, table.x2, yrow - 10), fill=(224, 224, 224), width=1)
         draw.text((table.x1 + 14, yrow), name, font=table_font, fill=(75, 75, 75))
-        draw.text((table.x1 + 220, yrow), value, font=table_bold, fill=(15, 15, 15))
+        draw.text((table.x1 + 265, yrow), value, font=table_bold, fill=(15, 15, 15))
         yrow += row_h
 
     if result.mechanical_note:
@@ -2651,14 +2748,12 @@ def draw_analysis_graph(result: AnalysisResult,
                 if current:
                     lines.append(current)
                 current = word
-            if len(lines) >= 2:
-                break
-        if current and len(lines) < 3:
+        if current:
             lines.append(current)
         if lines:
             note_y = min(table.y2 - 14 * len(lines) - 10, yrow + 8)
             note_y = max(yrow + 4, note_y)
-            for line in lines[:3]:
+            for line in lines[:7]:
                 draw.text((table.x1 + 14, note_y), line, font=note_font, fill=(140, 0, 0))
                 note_y += 14
 
@@ -2669,7 +2764,7 @@ def draw_analysis_graph(result: AnalysisResult,
     draw.line((plot.x1 + 122, legend_y, plot.x1 + 164, legend_y), fill=(0, 90, 180), width=4)
     draw.text((plot.x1 + 172, legend_y - 10), "modulus fit", font=small_font, fill=(60, 60, 60))
     draw.line((plot.x1 + 290, legend_y - 15, plot.x1 + 290, legend_y + 15), fill=(10, 160, 150), width=4)
-    legend_break = "break extension (manual)" if result.break_is_manual else "break extension"
+    legend_break = "break extension" if result.elongation_data is not None else "terminal extension"
     draw.text((plot.x1 + 300, legend_y - 10), legend_break, font=small_font, fill=(60, 60, 60))
 
     meta = {
@@ -2872,46 +2967,13 @@ def export_analysis_xlsx(path: str | Path, result: AnalysisResult, source_path: 
         ["Grammage", grammage_g_m2 if grammage_g_m2 is not None else "", "g/m²"],
         ["", ""],
         ["Result", "Value", "Unit", "Source/notes"],
-        ["Extension at break from instrument output", result.elongation, "mm", result.elongation_source],
-        ["Tensile strain at break from instrument output", result.elongation_text_percent, "%", "extension / gauge length"],
-        [
-            "Extension at break from extracted curve" + (" (manual)" if result.break_is_manual else ""),
-            result.elongation_data,
-            "mm",
-            "manually selected from analysis graph" if result.break_is_manual else "detected from extracted curve",
-        ],
-        [
-            "Tensile strain at break from extracted curve" + (" (manual)" if result.break_is_manual else ""),
-            result.elongation_data_percent,
-            "%",
-            "manual extension / gauge length" if result.break_is_manual else "extension / gauge length",
-        ],
-        ["Maximum force from instrument output", result.max_force, "N", result.max_force_source],
-        ["Maximum force from extracted curve", result.max_force_data, "N", "maximum of extracted curve"],
-        ["Initial force-extension slope", result.elastic_slope_n_per_mm, "N/mm", f"linear fit R²={result.modulus_r2:.4f}" if result.modulus_r2 is not None else ""],
-        ["Tensile stiffness", result.tensile_stiffness_kn_per_m, "kN/m", "slope × gauge length / width"],
-        [
-            "Tensile stiffness index",
-            result.tensile_stiffness_index_knm_per_kg,
-            "kN·m/kg",
-            (
-                "slope-derived tensile stiffness / grammage"
-                if grammage_g_m2 is not None
-                else "not calculated: grammage not provided"
-            ),
-        ],
-        [
-            "Tensile modulus",
-            result.elastic_modulus_mpa,
-            "MPa",
-            (
-                "slope × gauge length / (width × thickness)"
-                if thickness_um is not None
-                else "not calculated: thickness not provided"
-            ),
-        ],
-        ["Tensile energy / area under curve", result.toughness_n_mm, "N·mm", "to curve-derived break extension"],
-        ["Tensile energy / area under curve", result.toughness_mj, "mJ", "1 N·mm = 1 mJ"],
+        *[[name, value, unit, ""] for name, value, unit in mechanical_report_rows(result)],
+        ["Test outcome selection", result.rupture_mode, "", "auto / operator selection"],
+        ["Rupture decision note", result.rupture_note, "", "Image-only decision is a heuristic"],
+        ["Terminal point source", result.terminal_source, "", ""],
+        ["Manual terminal extension", result.manual_terminal_extension, "mm", "optional override"],
+        ["Manual break extension", result.manual_break_extension, "mm", "only for confirmed rupture"],
+        ["Work units", "1 N·mm = 1 mJ", "", "Work is not energy density or unmeasured work to break"],
         ["Axis x min", result.x_min, "mm", "axis-grid marker on display graph"],
         ["Axis x max", result.x_max, "mm", "axis-grid marker on display graph"],
         ["Axis y min", result.y_min, "N", "axis-grid marker on display graph"],
@@ -2919,10 +2981,10 @@ def export_analysis_xlsx(path: str | Path, result: AnalysisResult, source_path: 
         ["Mechanical calculation note", result.mechanical_note, "", ""],
     ]
     curve = result.curve_xy if result.curve_xy is not None else np.empty((0,2))
-    rows_curve = [["Extension_mm", "Tensile_strain_percent", "Force_N"]]
+    rows_curve = [["Extension_mm", "Tensile_strain_percent", "Force_N", "Within_analysed_interval"]]
     for x, y in curve:
         pct = (float(x) / gauge_length_mm * 100.0) if gauge_length_mm and gauge_length_mm > 0 else ""
-        rows_curve.append([float(x), pct, float(y)])
+        rows_curve.append([float(x), pct, float(y), int(result.terminal_extension_mm is not None and x <= result.terminal_extension_mm)])
     rows_fit = [["Item", "x1_mm", "y1_N", "x2_mm", "y2_N"]]
     if result.modulus_line is not None:
         x1, y1, x2, y2 = result.modulus_line

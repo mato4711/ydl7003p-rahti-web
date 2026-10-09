@@ -27,7 +27,7 @@ SESSION_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = int(os.environ.get("YDL_MAX_UPLOAD_BYTES", str(30 * 1024 * 1024)))
 SESSION_TTL_SECONDS = int(os.environ.get("YDL_SESSION_TTL_SECONDS", str(8 * 3600)))
 
-app = FastAPI(title="YDL-7003-P data analyzer", version="1.9")
+app = FastAPI(title="YDL-7003-P data analyzer", version="1.15")
 app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
 
 _sessions: dict[str, dict[str, Any]] = {}
@@ -114,6 +114,11 @@ def _result_json(result: core.AnalysisResult) -> dict[str, Any]:
         "modulus_r2", "break_line_x", "toughness_n_mm", "toughness_mj",
         "mechanical_note", "test_datetime", "test_datetime_source",
         "manual_break_extension", "break_is_manual",
+        "rupture_mode", "manual_terminal_extension", "rupture_status", "rupture_note",
+        "peak_extension_mm", "peak_strain_percent", "maximum_stress_mpa",
+        "terminal_extension_mm", "terminal_strain_percent", "terminal_force_n",
+        "terminal_source", "residual_load_ratio", "work_to_peak_n_mm",
+        "post_peak_energy_n_mm", "work_to_terminal_n_mm",
     )
     data = {name: getattr(result, name) for name in fields}
     for key, value in list(data.items()):
@@ -275,6 +280,11 @@ def _payload(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_settings(state: dict[str, Any], payload: dict[str, Any]) -> None:
+    for key in ("gauge_length_mm", "sample_width_mm"):
+        if key in payload:
+            value = _safe_float(payload[key])
+            if value is None or not np.isfinite(value) or value <= 0:
+                raise HTTPException(status_code=400, detail=f"{key} must be a positive finite number.")
     state["gauge_length_mm"] = _safe_float(
         payload.get("gauge_length_mm"), state["gauge_length_mm"]
     ) or 50.0
@@ -301,14 +311,14 @@ def index() -> HTMLResponse:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "version": "1.15"}
 
 
 @app.post("/api/analyze")
 async def analyze(
     image: UploadFile = File(...),
-    gauge_length_mm: float = Form(50.0),
-    sample_width_mm: float = Form(15.0),
+    gauge_length_mm: float = Form(50.0, gt=0),
+    sample_width_mm: float = Form(15.0, gt=0),
     thickness_um: Optional[str] = Form(None),
     grammage_g_m2: Optional[str] = Form(None),
 ) -> JSONResponse:
@@ -368,6 +378,7 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
         state["axis_confirmation_required"] = False
         previous_datetime = state["result"].test_datetime
         previous_datetime_source = state["result"].test_datetime_source
+        previous_rupture_mode = state["result"].rupture_mode
         arr = np.asarray(screen_corners, dtype=np.float32)
         if arr.shape != (4, 2):
             raise HTTPException(status_code=400, detail="screen_corners must contain four [x,y] points.")
@@ -377,6 +388,7 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
             state["rectified"], screen_detection_ok=True
         )
         state["result"] = core.analyze_rectified(state["rectified"])
+        state["result"].rupture_mode = previous_rupture_mode
         if (
             previous_datetime
             and previous_datetime_source in {"user entered", "current browser time (prefilled)"}
@@ -385,6 +397,17 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
             state["result"].test_datetime_source = previous_datetime_source
 
     result = state["result"]
+
+    if "rupture_mode" in payload:
+        mode = payload["rupture_mode"]
+        if mode not in {"auto", "no_rupture", "rupture"}:
+            raise HTTPException(status_code=400, detail="Invalid test outcome.")
+        result.rupture_mode = mode
+        result.manual_break_extension = None
+    if "manual_terminal_extension" in payload:
+        result.manual_terminal_extension = _optional_positive_float(
+            payload["manual_terminal_extension"], "Terminal extension"
+        )
 
     old_graph_corners = (
         np.asarray(result.graph_corners, dtype=np.float32).copy()
@@ -476,6 +499,17 @@ async def update_session(session_id: str, payload: dict[str, Any]) -> JSONRespon
             result.break_is_manual = False
         else:
             result.manual_break_extension = float(value)
+
+    for name in ("manual_terminal_extension", "manual_break_extension"):
+        value = getattr(result, name)
+        if value is not None:
+            curve = core.prepare_curve_for_mechanics(result.curve_xy)
+            upper = float(curve[-1, 0]) if len(curve) else 0.0
+            if result.elongation_source != "curve fallback" and result.elongation is not None:
+                upper = min(upper, result.elongation)
+            if not len(curve) or not np.isfinite(value) or not curve[0, 0] < value <= upper:
+                setattr(result, name, None)
+                raise HTTPException(status_code=400, detail=f"{name} must lie within the extracted/recorded test range (up to {upper:.3f} mm).")
 
     _refresh_outputs(state)
     if payload.get("axis_confirmed"):
