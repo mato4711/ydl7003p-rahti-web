@@ -203,3 +203,24 @@ This protection is activated only when a user manually moves a graph corner.
 - The analysis graph loads afterward in the background.
 - Visible loading notices explain that the corrected screen and/or analysis graph are still being transferred and rendered.
 - This improves perceived responsiveness when the numerical results arrive before the PNG images.
+
+## Version 15: progressive curves and incomplete rupture
+
+- Conservative clear/no-clear/uncertain rupture classification; operator
+  confirmation and a visible terminal-extension override.
+- Curve peak stress/strain, terminal force/strain, residual-load ratio,
+  pre-peak work, post-peak work and total work to the selected endpoint.
+- No break strain or work-to-break for a test without confirmed/clear rupture.
+- Modulus fits use contiguous rising pre-peak points, with fit quality and
+  image-resolution checks. No extrapolated work for a missing initial segment.
+- Consistent browser, graph, PDF and Excel results; low-force graph tick spacing.
+- Low-force axis-label support; operator review of OCR/calibration remains required.
+- Docker Compose example for M720q; complete update/hosting steps in DEPLOYMENT.md.
+- Health response includes version 1.15. Static assets use cache version 15.
+
+Regression checks:
+
+```bash
+python -m pip install -r requirements.txt pytest httpx
+python -m pytest -q tests
+```

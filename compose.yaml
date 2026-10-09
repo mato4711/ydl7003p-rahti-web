@@ -1,0 +1,15 @@
+services:
+  analyzer:
+    build: .
+    image: ydl7003p-web:1.15
+    container_name: ydl7003p-analyzer
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8093:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      YDL_TEMPLATE_PATH: /data/digit_templates_user.npz
+      YDL_SESSION_TTL_SECONDS: "28800"
+    mem_limit: 2g
+    cpus: 2.0

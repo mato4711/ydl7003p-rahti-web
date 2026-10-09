@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>YDL-7003-P data analyzer</title>
-  <link rel="stylesheet" href="/static/style.css?v=14">
+  <link rel="stylesheet" href="/static/style.css?v=15">
 </head>
 <body>
 <header>
@@ -125,6 +125,18 @@
             <label>Maximum force (N)<input id="maxForce" type="number" step="any"></label>
           </div>
           <button id="editedBtn">Use edited instrument values</button>
+          <label>Observed test outcome
+            <select id="ruptureMode">
+              <option value="auto">Automatic - inspect curve</option>
+              <option value="no_rupture">No rupture - manually stopped / extension limit</option>
+              <option value="rupture">Complete rupture observed</option>
+            </select>
+          </label>
+          <label>Terminal extension (mm, optional)
+            <input id="terminalExtension" type="number" min="0.000001" step="any" placeholder="automatic endpoint">
+          </label>
+          <button id="outcomeBtn">Apply outcome and endpoint</button>
+          <p class="optional-input-hint">Use the last loaded point before stopping/unloading. Leave the endpoint blank for automatic estimation. A final drop to zero may be unloading; review uncertain results. Ctrl-click the analysis graph sets a confirmed break only when rupture is allowed.</p>
           <button id="trainBtn">Teach recognizer from edited values</button>
           <p class="warning">Teaching updates the shared recognizer used by this deployment.</p>
         </section>
@@ -165,7 +177,7 @@
   </section>
 </main>
 
-<script src="/static/settings_io.js?v=14"></script>
-<script src="/static/app.js?v=14"></script>
+<script src="/static/settings_io.js?v=15"></script>
+<script src="/static/app.js?v=15"></script>
 </body>
 </html>

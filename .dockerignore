@@ -1,6 +1,10 @@
-__pycache__/
+.git
+__pycache__
 *.pyc
-.git/
-.gitignore
-README.md
+.pytest_cache
+tests
+data
+*.zip
+*.patch
+.venv
 test-data/
